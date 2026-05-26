@@ -1,0 +1,134 @@
+# GPT Image 2 Style Presets
+# Usage: gpt_image_2.py --preset <name> "subject description" output.png
+#
+# Each preset defines a style wrapper around the user's subject.
+# The subject gets interpolated into the prompt template at {subject}.
+#
+# Visual presets include "no text" to avoid unwanted labels.
+# Text-heavy presets explicitly request readable typography.
+
+# --- Visual Presets (aesthetic-focused) ---
+
+editorial:
+  description: "Dark editorial style — thin lines on black, muted palette, technical feel"
+  prompt: "on pure black background, {subject}, thin pale gray and subtle orange line art, minimalist technical diagram aesthetic, clean vector style, sparse with lots of negative space, dark moody, no text, no labels"
+
+blueprint:
+  description: "Technical blueprint — white/cyan lines on dark navy, engineering drawing feel"
+  prompt: "technical blueprint drawing of {subject}, thin white and light cyan lines on dark navy #0a1628 background, engineering schematic style, precise geometric, grid dots in background, architectural, no text, clean"
+
+ink:
+  description: "Japanese ink wash — organic brushstrokes, minimal, high contrast"
+  prompt: "{subject}, Japanese ink wash sumi-e style, black ink on off-white rice paper, minimal brushstrokes, negative space, organic flowing lines, zen aesthetic, monochrome, no text"
+
+risograph:
+  description: "Risograph print — flat colors, grain, slight misregistration, zine aesthetic"
+  prompt: "{subject}, risograph print style, flat color fills with visible halftone grain, terracotta orange and sage green ink on cream paper, slight color misregistration, screen print texture, vintage zine aesthetic, no text"
+
+wireframe:
+  description: "3D wireframe — glowing edges on black, holographic feel"
+  prompt: "{subject}, 3D wireframe mesh rendering on pure black background, thin glowing white and orange edge lines, transparent polygonal structure, holographic feel, no solid fills, technical visualization, no text"
+
+constellation:
+  description: "Star map — dots connected by faint lines, celestial feel"
+  prompt: "{subject} depicted as a constellation pattern, small white dots connected by very faint thin lines on deep black sky background, scattered star dust, celestial map aesthetic, minimal, ethereal, no text"
+
+brutalist:
+  description: "Neobrutalist — bold shapes, black borders, hard shadows, flat saturated colors"
+  prompt: "{subject}, neobrutalist graphic design style, bold geometric shapes, thick 3px black outlines, hard offset shadows, flat saturated colors orange and yellow on white, no gradients, no rounded corners, poster art, no text"
+
+grain:
+  description: "Film grain photo — moody, high ISO, warm tones, cinematic"
+  prompt: "photograph of {subject}, heavy film grain ISO 3200, warm color grading, shallow depth of field, cinematic lighting, moody atmosphere, 35mm analog film look, slight vignette"
+
+# --- Text-Heavy Presets (leverage GPT Image 2 text rendering) ---
+
+infographic:
+  description: "Data-rich visual explainer with labels, clean typography, structured layout"
+  prompt: "clean infographic about {subject}, structured layout with clear sections, readable sans-serif labels and headings, data visualization elements, white or light background, professional color palette, clear visual hierarchy, information design"
+  thinking: medium
+
+slide:
+  description: "Presentation slide — title + subtitle, minimal background, ready for keynote"
+  prompt: "presentation slide about {subject}, large bold title text, smaller subtitle, clean minimal background with subtle gradient, professional typography, wide 16:9 composition, ample whitespace, corporate-ready design"
+  thinking: low
+
+diagram:
+  description: "Labeled technical diagram — boxes, arrows, clean lines, readable annotations"
+  prompt: "technical diagram of {subject}, labeled boxes connected by arrows, clean lines, readable sans-serif annotations, structured flowchart or architecture layout, white background, professional, engineering documentation style"
+  thinking: medium
+
+poster:
+  description: "Event poster — bold headline + details, striking typography"
+  prompt: "event poster for {subject}, bold large headline typography, event details in smaller text below, striking visual design, strong color contrast, professional print-ready layout, eye-catching composition"
+  thinking: low
+
+menu:
+  description: "Print-ready menu/card — elegant type pairing, structured items"
+  prompt: "elegant menu or card layout for {subject}, refined serif and sans-serif type pairing, structured list of items with descriptions, cream or white background, subtle decorative elements, print-ready, restaurant or event quality"
+  thinking: low
+
+manga:
+  description: "Comic panel layout — speech bubbles, SFX text, dynamic composition"
+  prompt: "{subject}, manga comic panel layout, black and white with screentone shading, speech bubbles with readable text, dynamic action lines, Japanese manga aesthetic, expressive characters, sound effect text"
+  thinking: medium
+
+# --- Community Favorites (popular GPT Image 2 templates) ---
+
+trading-card:
+  description: "Retro holographic trading card with stats, borders, and character portrait"
+  prompt: "{subject}, retro holographic trading card design, ornate gold border with embossed patterns, character portrait in center, stat icons at bottom, holographic rainbow shimmer effect, dark background, collectible card game aesthetic"
+  thinking: medium
+
+pixar:
+  description: "Pixar/Disney 3D character with subsurface scattering and big eyes"
+  prompt: "{subject}, Pixar 3D animated character style, subsurface scattering skin, big expressive eyes, soft studio lighting, 3/4 view, clean colorful background, friendly appealing design, high detail render"
+  thinking: low
+
+app-mockup:
+  description: "Mobile app UI mockup in iPhone frame with status bar"
+  prompt: "iPhone mockup showing a mobile app screen for {subject}, modern UI design, clean interface with navigation bar, status bar at top showing time and battery, rounded corners, shadow beneath phone, white or gradient background, professional product shot"
+  thinking: medium
+
+isometric:
+  description: "Isometric 3D miniature diorama with PBR materials"
+  prompt: "{subject}, isometric 3D miniature diorama, 45 degree top-down view, PBR materials, tiny detailed scene, soft shadows, clean white background, game asset style, vibrant colors, tilt-shift effect"
+  thinking: low
+
+action-figure:
+  description: "Action figure in sealed blister packaging with branding"
+  prompt: "{subject}, action figure toy in sealed clear blister packaging, product photography, cardboard backing with logo and branding, plastic bubble, retail shelf display, studio lighting, white background"
+  thinking: medium
+
+cinematic:
+  description: "Anamorphic widescreen film still with lens flares"
+  prompt: "{subject}, anamorphic widescreen 2.39:1 aspect ratio, cinematic film still, lens flare, shallow depth of field, moody color grading, film grain, dramatic lighting, movie poster quality"
+
+panorama:
+  description: "360° equirectangular panorama for VR/immersive view"
+  prompt: "{subject}, 360 degree equirectangular panoramic view, seamless edges, immersive environment, photorealistic, HDR lighting, complete surrounding scene, VR ready"
+  thinking: medium
+
+nordic:
+  description: "Calm Scandinavian — muted tones, fog, clean geometry, quiet atmosphere"
+  prompt: "{subject}, Scandinavian design aesthetic, muted cool palette of slate blue and warm gray and soft white, foggy atmosphere, clean minimal geometry, natural textures like birch wood and raw linen, quiet contemplative mood, diffused northern light, no harsh shadows, serene and understated, hygge feeling"
+
+bauhaus:
+  description: "Bauhaus — primary colors, geometric shapes, rough grain texture, Kandinsky meets Moholy-Nagy"
+  prompt: "{subject}, Bauhaus design style, primary colors red yellow blue on off-white textured paper, bold geometric circles triangles rectangles, rough grain texture visible throughout, asymmetric grid composition, sans-serif typography, constructivist influence, handmade printing feel, no gradients, flat shapes with visible paper texture"
+
+flat-social:
+  description: "LinkedIn/social card — flat design, bold text with hard drop shadow, high contrast"
+  prompt: "{subject}, flat graphic design for social media, bold large sans-serif text with hard black drop shadow offset 4px, vibrant solid color background, no gradients, no 3D, extremely clean and minimal, high contrast, Instagram-ready square composition, text dominates the frame, modern editorial feel"
+
+linkedin-hero:
+  description: "LinkedIn hero card — professional, large quote text, author photo area, brand bar"
+  prompt: "{subject}, professional LinkedIn post card design, large bold serif quote text centered with hard flat shadow, muted professional background color like navy or charcoal, thin accent color bar at bottom, clean whitespace, author name area at bottom left, modern thought leadership aesthetic, square format"
+
+social-bold:
+  description: "Social media statement — giant text fills frame, textured flat background, punk energy"
+  prompt: "{subject}, social media graphic with giant bold condensed sans-serif text filling entire frame, rough textured flat background in a single saturated color, text in white or black with hard offset shadow, punk poster energy, no images just typography, raw and direct, square format"
+
+social-split:
+  description: "Split card — image left half, bold text right half, flat color block"
+  prompt: "{subject}, split composition social media card, left half is a photograph or illustration, right half is a solid flat color block with large bold white text, clean dividing line between halves, modern editorial magazine layout, no gradients, high contrast, square format"
