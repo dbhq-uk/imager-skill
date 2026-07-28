@@ -37,12 +37,13 @@ def run_cli(*args: str, env_extra: dict | None = None) -> subprocess.CompletedPr
         env.update(env_extra)
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
-        capture_output=True, text=True, env=env,
+        capture_output=True,
+        text=True,
+        env=env,
     )
 
 
 class TestCostModel(unittest.TestCase):
-
     def test_known_combinations(self):
         self.assertAlmostEqual(gpt_image_2.estimate_cost("low", "off", 1), 0.006)
         self.assertAlmostEqual(gpt_image_2.estimate_cost("high", "high", 1), 0.42)
@@ -96,7 +97,8 @@ class TestPresetsFile(unittest.TestCase):
         for name, preset in self.presets.items():
             with self.subTest(preset=name):
                 self.assertIn(
-                    "{subject}", preset["prompt"],
+                    "{subject}",
+                    preset["prompt"],
                     f"preset '{name}' drops the user's subject entirely",
                 )
 
@@ -108,7 +110,6 @@ class TestPresetsFile(unittest.TestCase):
 
 
 class TestPlatformsFile(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         cls.platforms = gpt_image_2.load_platforms()
@@ -127,7 +128,6 @@ class TestPlatformsFile(unittest.TestCase):
 
 
 class TestComposePrompt(unittest.TestCase):
-
     def test_no_preset_returns_prompt_unchanged(self):
         prompt, thinking = gpt_image_2.compose_prompt("a red bicycle", None)
         self.assertEqual(prompt, "a red bicycle")
