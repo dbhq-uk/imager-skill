@@ -26,7 +26,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -659,7 +659,7 @@ def main():
     gen_parser.add_argument("--draft", action="store_true", help="Draft mode: low quality, ~$0.006/image")
     gen_parser.add_argument("-y", "--yes", action="store_true", help="Skip cost confirmation prompt")
 
-    sub_again = sub.add_parser("again", help="Re-run last generation")
+    sub.add_parser("again", help="Re-run last generation")
 
     sub_history = sub.add_parser("history", help="Show generation history")
     sub_history.add_argument("-n", type=int, default=20, help="Number of entries to show")
