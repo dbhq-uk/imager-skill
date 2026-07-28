@@ -13,6 +13,7 @@ Usage:
     gpt_image_2.py list-presets
     gpt_image_2.py list-platforms
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,7 +27,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -63,9 +64,9 @@ PROVIDERS = {
 
 # Cost per image by quality and thinking level (April 2026 pricing)
 COST_PER_IMAGE = {
-    "high":   {"off": 0.21, "low": 0.25, "medium": 0.32, "high": 0.42},
+    "high": {"off": 0.21, "low": 0.25, "medium": 0.32, "high": 0.42},
     "medium": {"off": 0.05, "low": 0.07, "medium": 0.09, "high": 0.14},
-    "low":    {"off": 0.006, "low": 0.01, "medium": 0.015, "high": 0.025},
+    "low": {"off": 0.006, "low": 0.01, "medium": 0.015, "high": 0.025},
 }
 
 CONFIRM_THRESHOLD = 0.50
@@ -147,9 +148,19 @@ def platform_fit(image_path: Path, width: int, height: int) -> None:
         print("Warning: ImageMagick not found, skipping platform resize", file=sys.stderr)
         return
     subprocess.run(
-        ["magick", str(image_path), "-resize", f"{width}x{height}^",
-         "-gravity", "center", "-extent", f"{width}x{height}", str(image_path)],
-        check=True, capture_output=True,
+        [
+            "magick",
+            str(image_path),
+            "-resize",
+            f"{width}x{height}^",
+            "-gravity",
+            "center",
+            "-extent",
+            f"{width}x{height}",
+            str(image_path),
+        ],
+        check=True,
+        capture_output=True,
     )
 
 
@@ -158,9 +169,9 @@ def make_contact_sheet(images: list[Path], output: Path, cols: int = 3) -> None:
         print("Warning: ImageMagick not found, skipping contact sheet", file=sys.stderr)
         return
     subprocess.run(
-        ["magick", "montage"] + [str(p) for p in images] +
-        ["-geometry", "+4+4", "-tile", f"{cols}x", str(output)],
-        check=True, capture_output=True,
+        ["magick", "montage"] + [str(p) for p in images] + ["-geometry", "+4+4", "-tile", f"{cols}x", str(output)],
+        check=True,
+        capture_output=True,
     )
 
 
@@ -173,6 +184,7 @@ MIME_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", 
 def _build_multipart(fields: list[tuple[str, str | bytes, str | None]]) -> tuple[bytes, str]:
     """Build multipart/form-data body. Each field is (name, value, filename_or_None)."""
     import uuid
+
     boundary = uuid.uuid4().hex
     lines: list[bytes] = []
     for name, value, filename in fields:
@@ -455,7 +467,9 @@ def cmd_generate(args):
         quality = "low"
         size = "1024x1024"
 
-    output_path = Path(args.output) if args.output else Path(f"./gpt-image-2-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png")
+    output_path = (
+        Path(args.output) if args.output else Path(f"./gpt-image-2-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png")
+    )
 
     if args.project:
         base_dir = Path.home() / "gpt-image-2" / "outputs" / args.project
@@ -481,7 +495,9 @@ def cmd_generate(args):
         return
 
     if args.estimate:
-        print(f"Estimated cost ({mode_label}): ${cost:.3f} ({n} image{'s' if n > 1 else ''} × ~${per:.3f}/image, quality={quality}, thinking={thinking})")
+        print(
+            f"Estimated cost ({mode_label}): ${cost:.3f} ({n} image{'s' if n > 1 else ''} × ~${per:.3f}/image, quality={quality}, thinking={thinking})"
+        )
         return
 
     no_confirm = getattr(args, "yes", False)
@@ -495,7 +511,10 @@ def cmd_generate(args):
             print("Cancelled.", file=sys.stderr)
             sys.exit(0)
 
-    print(f"Generating {mode_label} with {provider} (thinking: {thinking}, quality: {quality}, size: {size}{f', seed: {seed}' if seed else ''})...", file=sys.stderr)
+    print(
+        f"Generating {mode_label} with {provider} (thinking: {thinking}, quality: {quality}, size: {size}{f', seed: {seed}' if seed else ''})...",
+        file=sys.stderr,
+    )
 
     images = api_request(
         prompt=prompt,
@@ -659,7 +678,7 @@ def main():
     gen_parser.add_argument("--draft", action="store_true", help="Draft mode: low quality, ~$0.006/image")
     gen_parser.add_argument("-y", "--yes", action="store_true", help="Skip cost confirmation prompt")
 
-    sub_again = sub.add_parser("again", help="Re-run last generation")
+    sub.add_parser("again", help="Re-run last generation")
 
     sub_history = sub.add_parser("history", help="Show generation history")
     sub_history.add_argument("-n", type=int, default=20, help="Number of entries to show")
