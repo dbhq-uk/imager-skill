@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # One dependency, PyYAML, and the CLI speaks to the OpenAI API over the
+  # standard library rather than through a vendor SDK. That is deliberate: the
+  # smaller the dependency surface on a skill that holds an API key, the less
+  # there is to audit. Kept current anyway.
+  - package-ecosystem: pip
+    directory: /skills/gpt-image-2
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - python
+    commit-message:
+      prefix: "deps"
+    groups:
+      python:
+        patterns:
+          - "*"

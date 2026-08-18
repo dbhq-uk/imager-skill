@@ -3,23 +3,23 @@ name: gpt-image-2
 description: Generate and edit images using OpenAI's GPT Image 2 API. Interactive skill that guides users through image creation with style presets, cost-aware draft/final workflow, thinking mode, carousels, and photo editing. This skill should be used when the user requests image generation via OpenAI/GPT Image 2, wants to create social media carousels, edit photos into artistic styles, or needs images with readable text (infographics, diagrams, posters).
 ---
 
-# GPT Image 2 — Interactive Image Generation
+# GPT Image 2 - Interactive Image Generation
 
 Generate and edit images via OpenAI's GPT Image 2 API with an interactive, guided workflow.
 
 ## Interactive Flow
 
-When the user invokes this skill, guide them through these steps using AskUserQuestion. Do not skip steps — the interactive flow is the core experience.
+When the user invokes this skill, guide them through these steps using AskUserQuestion. Do not skip steps - the interactive flow is the core experience.
 
 ### Step 1: What are we making?
 
 Ask the user what they want to create. Offer these options:
 
-- **Single image** — one image from a text prompt
-- **Photo edit** — transform an existing photo into a style
-- **Carousel** — 5-10 cohesive slides for LinkedIn/Instagram
-- **Variants** — multiple versions of the same concept
-- **Quick generate** — skip questions, just run the prompt
+- **Single image** - one image from a text prompt
+- **Photo edit** - transform an existing photo into a style
+- **Carousel** - 5-10 cohesive slides for LinkedIn/Instagram
+- **Variants** - multiple versions of the same concept
+- **Quick generate** - skip questions, just run the prompt
 
 If the user already provided a clear prompt (e.g. "generate an editorial image of a rocket"), skip to Step 3.
 
@@ -36,7 +36,7 @@ infographic, slide, diagram, poster, menu, manga
 **Community favorites:**
 trading-card, pixar, app-mockup, isometric, action-figure, cinematic, panorama
 
-**Custom** — user describes their own style
+**Custom** - user describes their own style
 
 Ask: "Which style? Or describe your own."
 
@@ -81,11 +81,11 @@ Ask: "What's the story? Give me the key message and I'll draft a 10-slide arc."
 
 Then propose a slide-by-slide plan like:
 ```
-Slide 1: [Cover] — hook headline + hero image
-Slide 2: [Problem] — bold statement
-Slide 3: [Context] — illustration + explanation
+Slide 1: [Cover] - hook headline + hero image
+Slide 2: [Problem] - bold statement
+Slide 3: [Context] - illustration + explanation
 ...
-Slide 10: [CTA] — call to action with URL
+Slide 10: [CTA] - call to action with URL
 ```
 
 Ask the user to approve or modify the plan.
@@ -147,8 +147,8 @@ When helping users write prompts, apply these patterns:
 Always invoke through the skill's venv:
 
 ```bash
-PY=~/.claude/skills/gpt-image-2/.venv/bin/python
-GEN=~/.claude/skills/gpt-image-2/scripts/gpt_image_2.py
+PY=${CLAUDE_SKILL_DIR}/.venv/bin/python
+GEN=${CLAUDE_SKILL_DIR}/scripts/gpt_image_2.py
 
 # Basic generation
 $PY $GEN "prompt" output.png
@@ -185,10 +185,11 @@ Requires `OPENAI_API_KEY` in the environment. Use `--provider openrouter` with `
 
 ## Files
 
-- `scripts/gpt_image_2.py` — main CLI (Python, requires PyYAML)
-- `presets.yaml` — 21 style presets (visual + text-heavy + community)
-- `platforms.yaml` — 8 platform sizing presets
-- `references/api_reference.md` — full API documentation
-- `~/.config/gpt-image-2/config.yaml` — user defaults
-- `~/.config/gpt-image-2/history.jsonl` — generation log
-- `~/.config/gpt-image-2/last.json` — last run (for `again`)
+- `scripts/gpt_image_2.py` - main CLI (Python, requires PyYAML)
+- `scripts/setup.sh` - creates the venv and installs PyYAML
+- `presets.yaml` - 21 style presets (visual + text-heavy + community)
+- `platforms.yaml` - 8 platform sizing presets
+- `references/api_reference.md` - full API documentation
+- `~/.config/gpt-image-2/config.yaml` - user defaults
+- `~/.config/gpt-image-2/history.jsonl` - generation log
+- `~/.config/gpt-image-2/last.json` - last run (for `again`)

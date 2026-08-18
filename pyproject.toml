@@ -1,0 +1,48 @@
+# Tooling config only. This is not a package: the skill is a directory with its
+# own requirements.txt and its own .venv, and nothing here is ever built or
+# published.
+
+[tool.ruff]
+# 3.9 is the skill's floor. Setting it here matters: without it ruff would
+# happily rewrite annotations into syntax that breaks the oldest Python this
+# supports, and the CI matrix would then fail on the floor job rather than here.
+target-version = "py39"
+
+# Chosen to fit the code as written rather than to force a reflow. The CLI holds
+# long single-line prompt strings; wrapping them would hurt readability to
+# satisfy an arbitrary number.
+line-length = 120
+
+exclude = [".venv", "venv"]
+
+[tool.ruff.lint]
+# Deliberately modest. The job is to stop new rot, not to relitigate working
+# script. Add rules when they earn their keep.
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "W",    # pycodestyle warnings
+]
+
+ignore = [
+    "E501",  # line-too-long: line-length above is advisory for the formatter,
+             # not a hard gate. Flagging it here would fail CI on prompt strings
+             # that cannot sensibly be split.
+    "B008",  # function call in default argument - not a pattern here, and the
+             # rule misfires on argparse-adjacent helpers.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test modules load their subject by path, so the sys.path.insert must run
+# before the import. E402 is the correct shape here, not a mistake.
+"**/tests/*.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gpt_image_2"]
+
+[tool.ruff.format]
+quote-style = "preserve"

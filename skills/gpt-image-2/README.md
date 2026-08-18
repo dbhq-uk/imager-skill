@@ -17,23 +17,24 @@ Adapted from [glebis/claude-skills](https://github.com/glebis/claude-skills/tree
 ## Quick Start
 
 ```bash
-# 1. Install the skill (creates venv, installs PyYAML)
-./install.sh gpt-image-2
+# 1. Install the skill, then create the venv and install PyYAML
+./install.sh                          # from the repo root
+${CLAUDE_SKILL_DIR}/scripts/setup.sh
 
 # 2. Set your OpenAI API key
 export OPENAI_API_KEY=sk-...
 
 # 3. Run the onboarding wizard
-~/.claude/skills/gpt-image-2/.venv/bin/python \
-  ~/.claude/skills/gpt-image-2/scripts/gpt_image_2.py init
+${CLAUDE_SKILL_DIR}/.venv/bin/python \
+  ${CLAUDE_SKILL_DIR}/scripts/gpt_image_2.py init
 
 # 4. Try a draft image
-~/.claude/skills/gpt-image-2/.venv/bin/python \
-  ~/.claude/skills/gpt-image-2/scripts/gpt_image_2.py \
+${CLAUDE_SKILL_DIR}/.venv/bin/python \
+  ${CLAUDE_SKILL_DIR}/scripts/gpt_image_2.py \
   --draft --preset editorial "a cat astronaut" ./cat.png
 ```
 
-In Claude Code, just describe what you want — the skill will guide you interactively.
+In Claude Code, just describe what you want - the skill will guide you interactively.
 
 ## API Key
 
@@ -45,17 +46,18 @@ echo 'export OPENAI_API_KEY=sk-...' >> ~/.bashrc
 
 ## Optional Dependencies
 
-- **ImageMagick** (`magick` on PATH) — required for platform resizing and carousel contact sheets
+- **ImageMagick** (`magick` on PATH) - required for platform resizing and carousel contact sheets
   - macOS: `brew install imagemagick`
   - Linux: `sudo apt install imagemagick`
 
 ## Files
 
-- `SKILL.md` — interactive workflow Claude follows when invoked
-- `scripts/gpt_image_2.py` — main CLI (Python, requires PyYAML)
-- `presets.yaml` — 21 style presets
-- `platforms.yaml` — 8 platform sizing presets
-- `references/api_reference.md` — full API documentation
+- `SKILL.md` - interactive workflow Claude follows when invoked
+- `scripts/gpt_image_2.py` - main CLI (Python, requires PyYAML)
+- `scripts/setup.sh` - creates the venv and installs PyYAML
+- `presets.yaml` - 21 style presets
+- `platforms.yaml` - 8 platform sizing presets
+- `references/api_reference.md` - full API documentation
 
 User config and history live at `~/.config/gpt-image-2/`.
 

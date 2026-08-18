@@ -1,0 +1,22 @@
+{
+  "name": "gpt-image-2",
+  "description": "Generate and edit images with OpenAI's GPT Image 2, for Claude Code and Codex - 21 style presets, platform sizing for the places images actually go, carousels with seed-locked composition, and photo edits. Drafts cost around $0.006 against $0.21 for a final, so the workflow iterates on drafts and only pays for the one you approved, and it tells you the cost before it spends anything.",
+  "version": "1.0.0",
+  "author": {
+    "name": "DBHQ",
+    "email": "dan@dbhq.uk"
+  },
+  "homepage": "https://dbhq.uk",
+  "repository": "https://github.com/dbhq-uk/gpt-image-2-skill",
+  "license": "MIT",
+  "keywords": [
+    "image-generation",
+    "openai",
+    "gpt-image",
+    "carousel",
+    "photo-editing",
+    "design",
+    "social-media",
+    "openrouter"
+  ]
+}

@@ -1,0 +1,278 @@
+name: Validate plugin
+
+on:
+  push:
+  pull_request:
+
+# A second push to the same branch cancels the first: CI should report on the
+# newest commit, not queue behind stale ones.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege at the top level so every job inherits it. Nothing here writes
+# to the repo, publishes packages, or comments on PRs.
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate plugin manifest is valid JSON
+        run: jq empty .claude-plugin/plugin.json
+
+      - name: Install PyYAML for the catalogue checks
+        # The runner's system python does not carry it, and these two checks
+        # read the catalogues as data rather than as text.
+        run: python3 -m pip install --break-system-packages pyyaml
+
+      - name: Validate the preset and platform catalogues parse
+        # These are data, and a YAML slip in them fails at generation time with
+        # the user's prompt already typed. Cheaper to catch here.
+        run: |
+          python3 - <<'PY'
+          import sys, yaml, pathlib
+          for f in ("presets.yaml", "platforms.yaml"):
+              p = pathlib.Path("skills/gpt-image-2") / f
+              d = yaml.safe_load(p.read_text(encoding="utf-8"))
+              if not isinstance(d, dict) or not d:
+                  print(f"{p}: not a non-empty mapping"); sys.exit(1)
+              print(f"{p}: {len(d)} entries")
+          PY
+
+      - name: Every preset has a description and a prompt
+        # The description is what the user picks from; the prompt is what is
+        # actually sent. A preset missing either is listable and unusable, and
+        # nothing else in the pipeline notices.
+        run: |
+          python3 - <<'PY'
+          import sys, yaml, pathlib
+          presets = yaml.safe_load(pathlib.Path("skills/gpt-image-2/presets.yaml").read_text(encoding="utf-8"))
+          bad = [k for k, v in presets.items()
+                 if not isinstance(v, dict) or not v.get("description") or not v.get("prompt")]
+          if bad:
+              print("presets missing description or prompt:", ", ".join(bad)); sys.exit(1)
+          print(f"all {len(presets)} presets complete")
+          PY
+
+      - name: Check shell scripts parse
+        # Root installers included: a syntax error there breaks every install.
+        run: |
+          fail=0
+          while IFS= read -r s; do
+            bash -n "$s" || { echo "Syntax error: $s"; fail=1; }
+          done < <({ find . -maxdepth 1 -name '*.sh'; find skills -name '*.sh'; })
+          exit $fail
+
+      - name: shellcheck
+        # ubuntu-latest ships shellcheck. ./ prefixes so a filename beginning
+        # with a dash could never be read as an option (SC2035).
+        run: shellcheck ./install.sh ./install-codex.sh ./skills/*/scripts/*.sh
+
+      - name: Check SKILL.md frontmatter
+        run: |
+          python3 - <<'PY'
+          import sys, pathlib, re
+          ok = True
+          for skill in sorted(pathlib.Path("skills").glob("*/SKILL.md")):
+              text = skill.read_text(encoding="utf-8")
+              m = re.match(r"^---\n(.*?)\n---", text, re.S)
+              if not m:
+                  print(f"{skill}: missing YAML frontmatter"); ok = False; continue
+              fm = m.group(1)
+              name = re.search(r"^name:\s*(.+)$", fm, re.M)
+              desc = re.search(r"^description:\s*(.+)$", fm, re.M)
+              if not name:
+                  print(f"{skill}: missing 'name'"); ok = False
+              else:
+                  name = name.group(1).strip()
+                  if name != skill.parent.name:
+                      print(f"{skill}: name '{name}' != directory '{skill.parent.name}'"); ok = False
+                  if not re.fullmatch(r"[a-z0-9-]{1,64}", name):
+                      print(f"{skill}: name must be lowercase alphanumeric/hyphen, <=64 chars"); ok = False
+              if not desc:
+                  print(f"{skill}: missing 'description'"); ok = False
+              elif len(desc.group(1).strip()) > 1024:
+                  print(f"{skill}: description exceeds 1024 chars"); ok = False
+          sys.exit(0 if ok else 1)
+          PY
+
+      # The whole install story rests on ${CLAUDE_SKILL_DIR} being substituted.
+      # A hardcoded ~/.claude/skills path works on the author's machine and is
+      # wrong under both a Codex install and a plugin install - which is exactly
+      # the bug this skill carried until it moved here: it lived in a personal
+      # repo, was only ever installed one way, and every path in SKILL.md was
+      # hardcoded. Asserted rather than trusted, because it reappears every time
+      # someone pastes a working command out of their own terminal.
+      - name: No hardcoded install paths
+        run: |
+          if grep -rn '~/\.claude/skills\|\$HOME/\.claude/skills' skills/; then
+            echo "::error::Hardcoded install path found. Use \${CLAUDE_SKILL_DIR} instead."
+            exit 1
+          fi
+          echo "No hardcoded install paths."
+
+      # House style across DBHQ is a plain hyphen. Blockquoted lines are exempt
+      # so a document can quote someone else's prose verbatim. This one earns
+      # its place: the catalogue arrived from upstream with an em dash in every
+      # preset description.
+      - name: No em dashes in our own prose
+        run: |
+          hits=$(grep -rn $'—' --include='*.md' --include='*.sh' --include='*.py' --include='*.yaml' . \
+                 | grep -v ':[0-9]*:[[:space:]]*>' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Em dash found outside a quoted specimen. House style is a plain hyphen."
+            exit 1
+          fi
+          echo "No em dashes outside quoted specimens."
+
+      # The API key is read from the environment and never stored, so nothing
+      # here should ever look like one. Checked anyway: a key pasted into a
+      # command in SKILL.md while reproducing something is the realistic way one
+      # gets committed, and OpenAI keys are self-identifying.
+      - name: No API keys in the tree
+        run: |
+          if grep -rnE 'sk-[A-Za-z0-9_-]{20,}' --include='*.md' --include='*.py' --include='*.sh' --include='*.yaml' . ; then
+            echo "::error::Something matching an OpenAI API key is committed."
+            exit 1
+          fi
+          echo "No API keys in the tree."
+
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - run: python -m pip install --upgrade pip ruff
+
+      - name: ruff check
+        # Config lives in pyproject.toml. target-version is py39, the skill's
+        # floor, so ruff will not rewrite annotations into syntax that breaks
+        # the oldest Python this supports.
+        run: ruff check --output-format=github .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
+  tests:
+    name: tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 floor: the script's `str | None` hints are safe below 3.10 because
+        # it carries `from __future__ import annotations`, and PyYAML (its only
+        # dependency) supports 3.8+. Sampled rather than swept - floor, middle,
+        # ceiling is enough to catch a syntax or stdlib regression.
+        python-version: ['3.9', '3.11', '3.13']
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        working-directory: skills/gpt-image-2
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pip install -r requirements.txt
+
+      - name: Run test suite
+        working-directory: skills/gpt-image-2
+        # No network: the only function that calls out is api_request, and
+        # nothing in the suite reaches it. The CLI cases use --dry-run, which
+        # returns before the request is built.
+        run: python -m pytest tests/ -v -p no:cacheprovider
+        env:
+          # --dry-run still runs the API-key check first, so the CLI cases need
+          # a key present. It is never sent anywhere.
+          OPENAI_API_KEY: test-key-not-real
+
+  installers:
+    name: Installers actually install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      # The installers are how anyone outside the marketplace gets the skill, so
+      # they are exercised rather than assumed. Setup is non-interactive here -
+      # there is no credential to prompt for - so both installers must run clean
+      # end to end rather than merely survive.
+      - name: Claude install
+        run: |
+          ./install.sh
+          test -L "$HOME/.claude/skills/gpt-image-2" || { echo "not a symlink"; exit 1; }
+          test -f "$HOME/.claude/skills/gpt-image-2/SKILL.md" || { echo "SKILL.md missing"; exit 1; }
+          test -x "$HOME/.claude/skills/gpt-image-2/.venv/bin/python" || { echo "venv missing"; exit 1; }
+
+      - name: The installed skill can actually generate a prompt
+        # --dry-run builds the full prompt from the preset and the platform and
+        # returns before any request. It is the cheapest end-to-end assertion
+        # available: it proves the venv, PyYAML, and both catalogues line up.
+        env:
+          OPENAI_API_KEY: test-key-not-real
+        run: |
+          "$HOME/.claude/skills/gpt-image-2/.venv/bin/python" \
+            "$HOME/.claude/skills/gpt-image-2/scripts/gpt_image_2.py" \
+            --dry-run --preset editorial --platform square "a test subject" /tmp/out.png
+
+      - name: Codex install, and the rewritten paths resolve
+        run: |
+          ./install-codex.sh
+          target="$HOME/.codex/skills/gpt-image-2"
+          test -f "$target/SKILL.md" || { echo "SKILL.md missing"; exit 1; }
+          grep -q 'CLAUDE_SKILL_DIR' "$target/SKILL.md" && { echo "variable not substituted"; exit 1; }
+          test -d "$target/references" || { echo "references/ not linked"; exit 1; }
+          test -d "$target/.venv" || { echo ".venv not linked"; exit 1; }
+          # Every path the rewritten SKILL.md names must exist on disk. No
+          # exemptions: setup.sh runs before the link is made precisely so the
+          # venv path is real by the time this check reads it.
+          fail=0
+          while IFS= read -r p; do
+            [ -e "$p" ] || { echo "rewritten path does not exist: $p"; fail=1; }
+          done < <(grep -o "$target[^ \`\"']*" "$target/SKILL.md" | sort -u)
+          exit $fail
+
+      - name: No dangling symlinks after either install
+        run: |
+          found=$(find "$HOME/.claude/skills/gpt-image-2/" "$HOME/.codex/skills/gpt-image-2/" -xtype l 2>/dev/null || true)
+          if [ -n "$found" ]; then echo "::error::dangling symlinks:"; echo "$found"; exit 1; fi
+          echo "No dangling symlinks."
+
+  # Single required check for branch protection. Adding a job above does not mean
+  # remembering to add it to the protection rule - it only needs listing here.
+  ci-ok:
+    name: CI OK
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - validate
+      - lint
+      - tests
+      - installers
+    steps:
+      - name: Fail if any job did not succeed
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "job results: $results"
+          for r in $results; do
+            [ "$r" = "success" ] || { echo "::error::a job did not succeed"; exit 1; }
+          done

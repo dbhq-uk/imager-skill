@@ -1,0 +1,30 @@
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Local agent tooling state
+.serena/
+.superpowers/
+
+# Python. Unlike the prose-only skills in this org, these are real: setup.sh
+# builds .venv inside skills/gpt-image-2/, which is exactly where SKILL.md
+# expects it and exactly where it must never be committed.
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Generated images. The skill writes wherever it is pointed, and the working
+# directory is the obvious place to point it while trying something out.
+*.png
+*.jpg
+*.jpeg
+*.webp
+!assets/*.png

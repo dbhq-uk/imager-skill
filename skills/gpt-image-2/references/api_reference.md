@@ -35,7 +35,7 @@ Content-Type: application/json
 | `n` | integer | 1 | Number of images to generate (1-10) |
 | `size` | string | `1024x1024` | Image size. Options: `1024x1024`, `1536x1024`, `1024x1536`, `2000x1024`, `1024x2000`, `auto` |
 | `quality` | string | `high` | `low`, `medium`, `high` |
-| `thinking` | string | `off` | `off`, `low`, `medium`, `high` — reasoning before rendering |
+| `thinking` | string | `off` | `off`, `low`, `medium`, `high` - reasoning before rendering |
 | `response_format` | string | `url` | `url` or `b64_json` |
 
 ## Edit Request Body

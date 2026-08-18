@@ -6,12 +6,17 @@
 #   2. Installs requirements.txt (PyYAML)
 #   3. Reminds the user to set OPENAI_API_KEY
 #
-# It does NOT prompt for an API key — the script reads OPENAI_API_KEY (or
+# It does NOT prompt for an API key - the script reads OPENAI_API_KEY (or
 # OPENROUTER_API_KEY) from the environment. Set it in your shell rc file.
 
 set -e
 
-SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# This script lives in scripts/, so the skill root is one level up. The venv has
+# to sit at the skill root because SKILL.md names it as
+# ${CLAUDE_SKILL_DIR}/.venv - putting it beside this script instead would work
+# here and be wrong everywhere the skill is actually invoked from.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 VENV="$SKILL_DIR/.venv"
 
 GREEN='\033[0;32m'

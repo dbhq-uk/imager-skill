@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GPT Image 2 — OpenAI Image Generation Tool
+"""GPT Image 2 - OpenAI Image Generation Tool
 
 A CLI wrapper around OpenAI's GPT Image 2 model.
 Supports style presets, platform-specific sizing, thinking mode, variants,
@@ -373,7 +373,7 @@ def save_metadata(output_path: Path, entry: HistoryEntry) -> None:
 
 
 def cmd_init():
-    print("🔧 GPT Image 2 — Setup Wizard\n")
+    print("🔧 GPT Image 2 - Setup Wizard\n")
 
     deps = {"magick": shutil.which("magick")}
     for name, path in deps.items():
@@ -410,9 +410,9 @@ def cmd_init():
         print(f"\n✅ Config already exists at {CONFIG_FILE}")
 
     print("\n📊 Pricing (per image):")
-    print("  quality=low:    $0.006 (draft)  — fast iteration")
-    print("  quality=medium: $0.05           — good for review")
-    print("  quality=high:   $0.21 (default) — production")
+    print("  quality=low:    $0.006 (draft)  - fast iteration")
+    print("  quality=medium: $0.05           - good for review")
+    print("  quality=high:   $0.21 (default) - production")
     print("  + thinking adds 20-100% on top")
 
     print("\nReady! Try: scripts/gpt_image_2.py \"a cat astronaut\" ./cat.png")
@@ -651,14 +651,14 @@ def main():
         return
 
     parser = argparse.ArgumentParser(
-        description="GPT Image 2 — OpenAI Image Generation",
+        description="GPT Image 2 - OpenAI Image Generation",
         epilog="Commands: init, list-presets, list-platforms, again, history",
     )
     sub = parser.add_subparsers(dest="command")
 
     gen_parser = argparse.ArgumentParser(
         prog="gpt_image_2.py",
-        description="GPT Image 2 — Generate images from text prompts",
+        description="GPT Image 2 - Generate images from text prompts",
     )
     gen_parser.add_argument("prompt", nargs="?", help="Text prompt for image generation")
     gen_parser.add_argument("output", nargs="?", help="Output file path (default: auto-named)")
