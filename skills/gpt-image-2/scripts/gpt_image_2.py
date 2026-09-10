@@ -50,7 +50,9 @@ def _migrate_legacy_settings() -> None:
     if new_dir.exists() or not old_dir.is_dir():
         return
     new_dir.parent.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(new_dir.parent, 0o700)
     old_dir.rename(new_dir)
+    os.chmod(new_dir, 0o700)
 
 
 _migrate_legacy_settings()
@@ -59,6 +61,13 @@ CONFIG_DIR = Path.home() / ".dbhq" / "gpt-image-2"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 HISTORY_FILE = CONFIG_DIR / "history.jsonl"
 LAST_RUN_FILE = CONFIG_DIR / "last.json"
+
+
+def ensure_config_dir() -> None:
+    """Create the settings directory owner-only, as every DBHQ skill does."""
+    CONFIG_DIR.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+
 
 MODEL = "gpt-image-2"
 THINKING_LEVELS = ("off", "low", "medium", "high")
@@ -344,7 +353,7 @@ class HistoryEntry:
 
 
 def save_history(entry: HistoryEntry) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_config_dir()
     with HISTORY_FILE.open("a") as f:
         f.write(json.dumps(asdict(entry)) + "\n")
     with LAST_RUN_FILE.open("w") as f:
@@ -408,7 +417,7 @@ def cmd_init():
         else:
             print(f"  {provider_name} key: ❌ not found")
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_config_dir()
     defaults = load_config()
     if not defaults:
         defaults = {
