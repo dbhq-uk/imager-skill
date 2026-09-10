@@ -31,7 +31,7 @@ the way you would treat any upload: OpenAI's data-usage terms apply, not ours.
 
 - The API key is read from `OPENAI_API_KEY` (or `OPENROUTER_API_KEY`) in the
   environment **on every run**
-- It is **never written to disk** by this skill. `~/.config/gpt-image-2/`
+- It is **never written to disk** by this skill. `~/.dbhq/gpt-image-2/`
   holds `config.yaml` (your defaults), `history.jsonl` (a generation log) and
   `last.json` (the last run, so `again` can repeat it), and none of the three
   has a field for a key
@@ -47,7 +47,7 @@ protecting it.
 - Builds a virtualenv at `skills/gpt-image-2/.venv`
 - Writes generated images where you tell it to, and defaults to the working
   directory
-- Writes config, history and last-run state to `~/.config/gpt-image-2/`
+- Writes config, history and last-run state to `~/.dbhq/gpt-image-2/`
 
 ### Spend
 
@@ -66,7 +66,7 @@ less there is to audit before trusting it. Dependabot keeps the pin current.
 ## Standing position on scanner findings
 
 Automated skill scanners flag the sentences above that name environment
-variables and the `~/.config/gpt-image-2/` directory as "sensitive file access".
+variables and the `~/.dbhq/gpt-image-2/` directory as "sensitive file access".
 That is accurate documentation, not a defect.
 
 **We do not delete accurate documentation to clear a scanner finding.** A

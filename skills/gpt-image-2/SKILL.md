@@ -190,6 +190,6 @@ Requires `OPENAI_API_KEY` in the environment. Use `--provider openrouter` with `
 - `presets.yaml` - 21 style presets (visual + text-heavy + community)
 - `platforms.yaml` - 8 platform sizing presets
 - `references/api_reference.md` - full API documentation
-- `~/.config/gpt-image-2/config.yaml` - user defaults
-- `~/.config/gpt-image-2/history.jsonl` - generation log
-- `~/.config/gpt-image-2/last.json` - last run (for `again`)
+- `~/.dbhq/gpt-image-2/config.yaml` - user defaults
+- `~/.dbhq/gpt-image-2/history.jsonl` - generation log
+- `~/.dbhq/gpt-image-2/last.json` - last run (for `again`)

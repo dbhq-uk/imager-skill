@@ -59,6 +59,6 @@ echo 'export OPENAI_API_KEY=sk-...' >> ~/.bashrc
 - `platforms.yaml` - 8 platform sizing presets
 - `references/api_reference.md` - full API documentation
 
-User config and history live at `~/.config/gpt-image-2/`.
+User config and history live at `~/.dbhq/gpt-image-2/`.
 
 See `SKILL.md` for the full interactive workflow and CLI reference.

@@ -92,7 +92,7 @@ Prices are OpenAI's at the time of writing and are baked into the estimator, so 
 
 **Spend money without telling you first.** Every path prices the run before making it. `-y` exists to skip the confirmation in a batch, and it is the only way to turn that off.
 
-**Store your API key.** It is read from the environment on each run. The skill writes config, a generation log and a last-run record to `~/.config/gpt-image-2/`, and none of the three has a field for a key.
+**Store your API key.** It is read from the environment on each run. The skill writes config, a generation log and a last-run record to `~/.dbhq/gpt-image-2/`, and none of the three has a field for a key.
 
 ## Development
 

@@ -30,7 +30,7 @@ Everything else here is a preference. These are not.
 
 **2. The draft loop stays the default.** Generate low quality, show it, ask, then upgrade with the same `--seed`. It is not a nicety - it is a 97% saving on the iteration that finding a direction actually takes, and it is the only reason this is cheap enough to play with. If you are editing `SKILL.md` and about to let it jump to a final because the prompt looked confident, do not.
 
-**3. The API key is read, never written.** It comes from `OPENAI_API_KEY` (or `OPENROUTER_API_KEY`) in the environment on every run. `~/.config/gpt-image-2/` holds config, a history log and a last-run record, and none of the three has a field for a key. Do not add one "for convenience", do not log the request headers, and do not write the key into the history entry so that `again` can replay it.
+**3. The API key is read, never written.** It comes from `OPENAI_API_KEY` (or `OPENROUTER_API_KEY`) in the environment on every run. `~/.dbhq/gpt-image-2/` holds config, a history log and a last-run record, and none of the three has a field for a key. Do not add one "for convenience", do not log the request headers, and do not write the key into the history entry so that `again` can replay it.
 
 ## Conventions
 

@@ -41,7 +41,21 @@ except ImportError:
 SKILL_DIR = Path(__file__).resolve().parent.parent
 PRESETS_FILE = SKILL_DIR / "presets.yaml"
 PLATFORMS_FILE = SKILL_DIR / "platforms.yaml"
-CONFIG_DIR = Path.home() / ".config" / "gpt-image-2"
+
+
+def _migrate_legacy_settings() -> None:
+    """One-time migration: settings used to live at ~/.config/gpt-image-2."""
+    new_dir = Path.home() / ".dbhq" / "gpt-image-2"
+    old_dir = Path.home() / ".config" / "gpt-image-2"
+    if new_dir.exists() or not old_dir.is_dir():
+        return
+    new_dir.parent.mkdir(mode=0o700, exist_ok=True)
+    old_dir.rename(new_dir)
+
+
+_migrate_legacy_settings()
+
+CONFIG_DIR = Path.home() / ".dbhq" / "gpt-image-2"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 HISTORY_FILE = CONFIG_DIR / "history.jsonl"
 LAST_RUN_FILE = CONFIG_DIR / "last.json"
