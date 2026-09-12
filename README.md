@@ -16,17 +16,19 @@ A free, open-source tool by [DBHQ](https://dbhq.uk)
 
 ---
 
-Generate and edit images with OpenAI's GPT Image 2, through a guided flow rather than a flag reference: what are we making, in which style, for where it is going, draft first, then final.
+Generate and edit images with OpenAI's GPT Image models, through a guided flow rather than a flag reference: what are we making, in which style, for where it is going, draft first, then final.
 
 ## What makes it different
 
-**The draft loop is the point.** A low-quality draft costs about $0.006 against roughly $0.21 for a final, so the workflow generates a draft, shows it to you, and only spends the real money once you have said yes. The approved draft's `--seed` carries into the final, so upgrading the quality keeps the composition you actually picked instead of rolling a new image at ten times the price. Across a ten-slide carousel that is $0.06 to find the direction rather than $2.10.
+**The draft loop is the point.** A low-quality draft costs about $0.006 against roughly $0.21 for a final, so the workflow generates a draft, shows it to you, and only spends the real money once you have said yes. Across a ten-slide carousel that is $0.06 to find the direction rather than $2.10.
 
-**It tells you the cost before it spends it.** Every run estimates first. Below $0.50 it proceeds; at or above, it stops and asks. `--estimate` prices a batch without generating anything, and `--dry-run` prints the fully assembled prompt without making a request at all. A tool that spends your money should never surprise you about how much.
+**It tells you the cost before it spends it, and what it cost afterwards.** Every run estimates first. Below $0.50 it proceeds; at or above, it stops and asks. `--estimate` prices a batch without generating anything, and `--dry-run` prints the fully assembled prompt without making a request at all. Once the call returns, the token `usage` the API reports is turned into the real billed figure and logged, so the estimate stops being a guess: after three runs at the same model, quality and size, it uses their median. A tool that spends your money should never surprise you about how much.
+
+**It knows a directory is a set.** `set-check` reads the history for the folder you are writing into and tells you which model and quality tier the images already there were made at - then matches them unless you say otherwise. This exists because a batch once went out at 35x the price it needed to, purely because a default said so.
 
 **One dependency, and no vendor SDK.** PyYAML, for the catalogues. The API calls go out over `urllib` from the standard library. That is a deliberate trade: this is a skill that holds an API key, and the less third-party code sits between the key and the wire, the less there is for you to audit before you trust it.
 
-**Presets that carry the whole prompt, not a style word.** 21 of them, each pairing a short description you choose from with a full prompt fragment that does the work - `editorial`, `blueprint`, `ink`, `risograph`, `wireframe`, `constellation`, `brutalist`, `grain` for visual work; `infographic`, `slide`, `diagram`, `poster`, `menu`, `manga` where the text in the image has to be legible; plus a set of community favourites. Platform sizing for the eight places images actually go.
+**Presets that carry the whole prompt, not a style word.** 27 of them, each pairing a short description you choose from with a full prompt fragment that does the work - `editorial`, `blueprint`, `ink`, `risograph`, `wireframe`, `constellation`, `brutalist`, `grain`, `nordic`, `bauhaus` for visual work; `infographic`, `slide`, `diagram`, `poster`, `menu`, `manga` where the text in the image has to be legible; plus community favourites and a social set. Platform sizing for the eight places images actually go - and the image is generated at the platform's own aspect ratio, then scaled down, rather than generated square and cropped.
 
 ## Install
 
@@ -74,19 +76,47 @@ PY=~/.claude/skills/gpt-image-2/.venv/bin/python
 GEN=~/.claude/skills/gpt-image-2/scripts/gpt_image_2.py
 
 $PY $GEN --draft --preset editorial "a cat astronaut" out.png   # ~$0.006
-$PY $GEN --seed 42 --quality high --preset editorial "a cat astronaut" out.png
+$PY $GEN --quality high --preset editorial "a cat astronaut" out.png
+$PY $GEN --model sunburst --quality xhigh --preset diagram "OAuth flow" out.png
+$PY $GEN --background transparent "a line-art compass rose, isolated" logo.png
 $PY $GEN --estimate --n 10 --quality high "batch test"          # price it, generate nothing
 $PY $GEN --dry-run --preset diagram "OAuth flow" out.png        # show the prompt, call nothing
+$PY $GEN set-check ./assets/icons/                              # what did this set use?
 ```
+
+### Models
+
+| Model | When |
+|---|---|
+| `gpt-image-2.5-flare` **(default)** | Everything, unless a reason says otherwise. About half the latency of `gpt-image-2` and fewer output tokens for the same tier. |
+| `gpt-image-2.5-sunburst` | Fine detail, dense text, precision and multi-turn edits. Slower, same token rates. |
+| `gpt-image-2` | Adding to a set generated on it, or a Batch API run - the 50% batch discount covers `gpt-image-2` and not the 2.5 models. |
+
+`low`, `medium` and `high` on all three; `xhigh` and `max` on the 2.5 models. The default is
+**low**, because the flow is draft-first.
+
+### Prices
+
+Published `gpt-image-2` figures at 1024x1024:
 
 | Quality | Per image | Ten-slide carousel |
 |---|---|---|
-| `--draft` (low) | $0.006 | $0.06 |
-| medium | $0.05 | $0.50 |
-| high (default) | $0.21 | $2.10 |
-| high + thinking | $0.25 to $0.42 | $2.50 to $4.20 |
+| `--draft` (low, the default) | $0.006 | $0.06 |
+| medium | $0.053 | $0.53 |
+| high | $0.211 | $2.11 |
 
-Prices are OpenAI's at the time of writing and are baked into the estimator, so check them against OpenAI's current pricing if the numbers matter to you. The full workflow and CLI reference is in [`skills/gpt-image-2/SKILL.md`](skills/gpt-image-2/SKILL.md).
+Non-square is cheaper: at `high`, 1024x1536 and 1536x1024 are $0.165. OpenAI publishes no
+per-image table for the 2.5 models, so the estimator treats these as an upper bound for them and
+then replaces the guess with the billed figure read back from each call's token usage. The full
+workflow and CLI reference is in [`skills/gpt-image-2/SKILL.md`](skills/gpt-image-2/SKILL.md).
+
+### No seed, no thinking mode
+
+Neither parameter exists in the OpenAI image API - both are absent from `CreateImageRequest` and
+`CreateImageEditRequest` in `openai/openai-openapi`. Earlier versions of this skill accepted
+`--seed` and `--thinking`, logged them, and sent neither; `--thinking` also inflated the cost
+estimate. Both now fail with an error saying what to use instead: the prompt and `--reference`
+for consistency, `--quality` or `--model sunburst` for complex layouts.
 
 ## What this will not do
 

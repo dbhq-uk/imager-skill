@@ -1,18 +1,25 @@
-# GPT Image 2 Skill
+# GPT Image Skill
 
-Generate and edit images via OpenAI's GPT Image 2 API with an interactive, guided workflow.
+Generate and edit images via OpenAI's GPT Image API with an interactive, guided workflow.
 
 Adapted from [glebis/claude-skills](https://github.com/glebis/claude-skills/tree/main/gpt-image-2).
 
 ## Features
 
-- **Style presets:** 21 presets across visual, text-heavy, and community categories
-- **Platform sizing:** YouTube, Instagram, slides, blog hero, X/Twitter, story
-- **Draft → final flow:** Iterate cheaply at $0.006/image before paying $0.21 for a final
-- **Carousels:** Cohesive 5-10 slide sequences with seed-locked composition
-- **Photo edit:** Transform an existing photo into a preset style
-- **Thinking mode:** Better text rendering and layout fidelity for complex compositions
-- **Cost awareness:** Estimates and prompts for confirmation above $0.50
+- **Three models:** `gpt-image-2.5-flare` (default), `gpt-image-2.5-sunburst`, `gpt-image-2`
+- **Style presets:** 27 presets across visual, text-heavy, community and social categories
+- **Platform sizing:** YouTube, Instagram, slides, blog hero, X/Twitter, story, Pinterest - the
+  image is generated at the platform's own aspect and scaled down, not generated square and
+  cropped
+- **Draft then final:** iterate at ~$0.006/image before paying for a final
+- **Transparent backgrounds:** `--background transparent` for logos, icons and assets
+- **Output formats:** png, jpeg, webp with compression control
+- **Masked inpainting:** `--edit` + `--mask` to change one region and leave the rest
+- **Reference images:** up to 16, to carry a subject or a look into a new scene
+- **Real cost, not an estimate:** every run reads `usage` back from the API and records what was
+  actually billed; estimates self-calibrate from that history
+- **Set consistency:** `set-check` reads the history for a directory and matches its model and
+  quality tier
 
 ## Quick Start
 
@@ -38,15 +45,23 @@ In Claude Code, just describe what you want - the skill will guide you interacti
 
 ## API Key
 
-The script reads `OPENAI_API_KEY` (or `OPENROUTER_API_KEY` if you set `--provider openrouter`) from the environment. Put it in your shell rc file:
+The script reads `OPENAI_API_KEY` (or `OPENROUTER_API_KEY` if you set `--provider openrouter`)
+from the environment. Put it in your shell rc file:
 
 ```bash
 echo 'export OPENAI_API_KEY=sk-...' >> ~/.bashrc
 ```
 
+## No seed, no thinking mode
+
+Neither parameter exists in the OpenAI image API. Earlier versions of this skill accepted
+`--seed` and `--thinking`, logged them, and sent neither; `--thinking` also inflated the cost
+estimate. Both now fail with an error explaining what to use instead - the prompt and
+`--reference` for consistency, `--quality` or `--model sunburst` for complex layouts.
+
 ## Optional Dependencies
 
-- **ImageMagick** (`magick` on PATH) - required for platform resizing and carousel contact sheets
+- **ImageMagick** (`magick` on PATH) - required for platform fitting and contact sheets
   - macOS: `brew install imagemagick`
   - Linux: `sudo apt install imagemagick`
 
@@ -55,10 +70,10 @@ echo 'export OPENAI_API_KEY=sk-...' >> ~/.bashrc
 - `SKILL.md` - interactive workflow Claude follows when invoked
 - `scripts/gpt_image_2.py` - main CLI (Python, requires PyYAML)
 - `scripts/setup.sh` - creates the venv and installs PyYAML
-- `presets.yaml` - 21 style presets
-- `platforms.yaml` - 8 platform sizing presets
+- `presets.yaml` - 27 style presets
+- `platforms.yaml` - 8 platform sizes
 - `references/api_reference.md` - full API documentation
 
-User config and history live at `~/.dbhq/gpt-image-2/`.
+User config and history live at `~/.dbhq/gpt-image-2/`. Set `GPT_IMAGE_HOME` to relocate them.
 
 See `SKILL.md` for the full interactive workflow and CLI reference.

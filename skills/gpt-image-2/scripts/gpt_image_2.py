@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""GPT Image 2 - OpenAI Image Generation Tool
+"""GPT Image - OpenAI Image Generation Tool
 
-A CLI wrapper around OpenAI's GPT Image 2 model.
-Supports style presets, platform-specific sizing, thinking mode, variants,
-image editing, seed locking, cost controls, and OpenRouter routing.
+A CLI wrapper around OpenAI's GPT Image models: gpt-image-2.5-flare (default),
+gpt-image-2.5-sunburst and gpt-image-2.
+
+Supports style presets, platform-aware sizing, variants, editing, masked
+inpainting, transparent backgrounds, output formats, cost controls that price
+from the API's own token usage, and OpenRouter routing.
 
 Usage:
     gpt_image_2.py [flags] "prompt" [output.png]
     gpt_image_2.py init                    # onboarding wizard
     gpt_image_2.py again                   # regenerate last
     gpt_image_2.py history [-n 10]         # show history
+    gpt_image_2.py set-check <dir>         # what did this set use?
+    gpt_image_2.py list-models
     gpt_image_2.py list-presets
     gpt_image_2.py list-platforms
 """
@@ -22,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -55,9 +61,15 @@ def _migrate_legacy_settings() -> None:
     os.chmod(new_dir, 0o700)
 
 
-_migrate_legacy_settings()
+# GPT_IMAGE_HOME relocates config, history and the last-run record. It exists so
+# the test suite can run against an empty history: cost estimates and the
+# set-check both read history.jsonl now, so a suite that used the real one would
+# pass or fail depending on what the machine's owner had generated that week.
+_ENV_HOME = os.environ.get("GPT_IMAGE_HOME")
+if not _ENV_HOME:
+    _migrate_legacy_settings()
 
-CONFIG_DIR = Path.home() / ".dbhq" / "gpt-image-2"
+CONFIG_DIR = Path(_ENV_HOME) if _ENV_HOME else Path.home() / ".dbhq" / "gpt-image-2"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 HISTORY_FILE = CONFIG_DIR / "history.jsonl"
 LAST_RUN_FILE = CONFIG_DIR / "last.json"
@@ -69,8 +81,42 @@ def ensure_config_dir() -> None:
     CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 
-MODEL = "gpt-image-2"
-THINKING_LEVELS = ("off", "low", "medium", "high")
+# ---------- Models ----------
+
+# gpt-image-2.5-flare is the default: same token rates as gpt-image-2, about
+# half the latency, and it spends fewer output tokens for the same quality
+# tier, so the same picture costs less. Sunburst is the precision-editing
+# sibling - slower, better on fine detail, dense text and multi-turn edits.
+#
+# gpt-image-2 stays selectable and is NOT deprecated: it is the replacement
+# target for gpt-image-1, 1.5 and 1-mini, which leave the API on 1 Dec 2026.
+# Keep it for adding to a set that was generated on it (see set-check), and for
+# Batch API runs - the 50% batch discount covers gpt-image-2 and not the 2.5s.
+
+DEFAULT_MODEL = "gpt-image-2.5-flare"
+
+MODELS = {
+    "gpt-image-2.5-flare": {
+        "aliases": ("flare", "2.5-flare"),
+        "qualities": ("low", "medium", "high", "xhigh", "max", "auto"),
+        "batch_discount": False,
+        "description": "Fast everyday generation. The default.",
+    },
+    "gpt-image-2.5-sunburst": {
+        "aliases": ("sunburst", "2.5-sunburst"),
+        "qualities": ("low", "medium", "high", "xhigh", "max", "auto"),
+        "batch_discount": False,
+        "description": "Precision editing, fine detail and dense text. Slower.",
+    },
+    "gpt-image-2": {
+        "aliases": ("2", "image-2"),
+        "qualities": ("low", "medium", "high", "auto"),
+        "batch_discount": True,
+        "description": "Previous generation. Eligible for the 50% Batch API discount.",
+    },
+}
+
+QUALITY_CHOICES = ("low", "medium", "high", "xhigh", "max", "auto")
 
 PROVIDERS = {
     "openai": {
@@ -85,22 +131,275 @@ PROVIDERS = {
     },
 }
 
-# Cost per image by quality and thinking level (April 2026 pricing)
-COST_PER_IMAGE = {
-    "high": {"off": 0.21, "low": 0.25, "medium": 0.32, "high": 0.42},
-    "medium": {"off": 0.05, "low": 0.07, "medium": 0.09, "high": 0.14},
-    "low": {"off": 0.006, "low": 0.01, "medium": 0.015, "high": 0.025},
+
+def normalise_model(name: str | None) -> str:
+    if not name:
+        return DEFAULT_MODEL
+    if name in MODELS:
+        return name
+    for canonical, info in MODELS.items():
+        if name in info["aliases"]:
+            return canonical
+    known = ", ".join(MODELS)
+    print(f"Error: unknown model '{name}'. Known models: {known}", file=sys.stderr)
+    sys.exit(1)
+
+
+# ---------- Cost ----------
+
+# Token prices per 1,000,000 tokens, standard tier, from the OpenAI pricing
+# page. All three models currently share these rates; they are kept per-model
+# because they have not always been equal and will not always stay equal.
+TOKEN_PRICES = {
+    "gpt-image-2.5-flare": {"text_in": 5.00, "image_in": 8.00, "image_out": 30.00},
+    "gpt-image-2.5-sunburst": {"text_in": 5.00, "image_in": 8.00, "image_out": 30.00},
+    "gpt-image-2": {"text_in": 5.00, "image_in": 8.00, "image_out": 30.00},
+}
+
+# The Batch API halves every rate, and only for models flagged batch_discount.
+BATCH_DISCOUNT = 0.5
+
+# Per-image costs OpenAI publishes for gpt-image-2. There is no equivalent
+# published table for the 2.5 models, which is exactly why measured_cost()
+# exists: once a few real runs are in history.jsonl their actual cost is known
+# and the guess stops mattering.
+PUBLISHED_COST = {
+    "gpt-image-2": {
+        "low": {"1024x1024": 0.006, "1024x1536": 0.005, "1536x1024": 0.005},
+        "medium": {"1024x1024": 0.053, "1024x1536": 0.041, "1536x1024": 0.041},
+        "high": {"1024x1024": 0.211, "1024x1536": 0.165, "1536x1024": 0.165},
+    }
+}
+
+# Fallback ceilings by quality tier, used when nothing better is known. These
+# are gpt-image-2's square-format figures, with xhigh and max extrapolated.
+# They are deliberately pessimistic: an estimate that under-quotes is the one
+# that does damage, because it is what lets a batch through the gate.
+FALLBACK_COST = {
+    "low": 0.006,
+    "medium": 0.053,
+    "high": 0.211,
+    "xhigh": 0.40,
+    "max": 0.80,
+    "auto": 0.211,
 }
 
 CONFIRM_THRESHOLD = 0.50
 
+# A DAY'S SPEND, NOT A CALL'S. CONFIRM_THRESHOLD is per invocation, so a script
+# that calls this once per image never trips it: 2,000 separate images at $0.21
+# is $420 and every single call is $0.21, comfortably under $0.50. That is the
+# exact shape of a batch job, and it is how a real run cost 35x what it needed
+# to on 2026-08-23.
+DAILY_WARN = 5.00
 
-def estimate_cost(quality: str, thinking: str, n: int) -> float:
-    return COST_PER_IMAGE.get(quality, COST_PER_IMAGE["high"]).get(thinking, 0.21) * n
+MIN_PIXELS = 655_360
+MAX_PIXELS = 8_294_400
+MAX_EDGE = 3840
+SIZE_STEP = 16
 
 
-def cost_per_unit(quality: str, thinking: str) -> float:
-    return COST_PER_IMAGE.get(quality, COST_PER_IMAGE["high"]).get(thinking, 0.21)
+def entry_cost(entry: dict) -> float:
+    """What an image actually cost, preferring the measured figure."""
+    for field in ("actual_cost", "estimated_cost"):
+        value = entry.get(field)
+        if value:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def read_history_entries() -> list:
+    """Every history row, or as many as parse cleanly."""
+    if not HISTORY_FILE.exists():
+        return []
+    rows: list = []
+    try:
+        for line in HISTORY_FILE.read_text().splitlines():
+            if not line.strip():
+                continue
+            rows.append(json.loads(line))
+    except Exception:  # noqa: BLE001
+        return rows
+    return rows
+
+
+def spend_today() -> float:
+    """What has already been spent through this skill today, from history.jsonl."""
+    today, total = datetime.now().strftime("%Y-%m-%d"), 0.0
+    for e in read_history_entries():
+        if str(e.get("timestamp", "")).startswith(today):
+            total += entry_cost(e)
+    return total
+
+
+def measured_cost(model: str, quality: str, size: str) -> float | None:
+    """Median per-image cost actually billed for this exact combination.
+
+    Self-calibrating, and the reason the estimate does not have to be right in
+    advance for a model whose per-image price OpenAI never published. Needs
+    three samples before it will speak, so one freak run cannot set the price.
+    """
+    samples = []
+    for e in read_history_entries():
+        if e.get("model") != model or e.get("quality") != quality or e.get("size") != size:
+            continue
+        actual, n = e.get("actual_cost"), e.get("n") or 1
+        if actual:
+            try:
+                samples.append(float(actual) / int(n))
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+    if len(samples) < 3:
+        return None
+    return statistics.median(samples)
+
+
+def cost_per_unit(model: str, quality: str, size: str) -> tuple:
+    """(cost per image, where that number came from)."""
+    measured = measured_cost(model, quality, size)
+    if measured is not None:
+        return measured, "measured"
+    published = PUBLISHED_COST.get(model, {}).get(quality, {}).get(size)
+    if published is not None:
+        return published, "published"
+    return FALLBACK_COST.get(quality, FALLBACK_COST["high"]), "upper bound"
+
+
+def estimate_cost(model: str, quality: str, size: str, n: int) -> float:
+    return cost_per_unit(model, quality, size)[0] * n
+
+
+def cost_from_usage(model: str, usage: dict, batch: bool = False) -> float | None:
+    """The real cost of a call, from the token counts the API reports back.
+
+    OpenAI's own advice is to measure with `usage` rather than read a table,
+    and it is the only figure that stays true when prices or token counts move
+    under the skill.
+    """
+    if not usage:
+        return None
+    prices = TOKEN_PRICES.get(model)
+    if not prices:
+        return None
+    try:
+        details = usage.get("input_tokens_details") or {}
+        if details:
+            text_in = float(details.get("text_tokens") or 0)
+            image_in = float(details.get("image_tokens") or 0)
+        else:
+            # No breakdown: price the whole input at the image rate, the dearer
+            # of the two, rather than quietly under-reporting.
+            text_in, image_in = 0.0, float(usage.get("input_tokens") or 0)
+        image_out = float(usage.get("output_tokens") or 0)
+    except (TypeError, ValueError):
+        return None
+    cost = (text_in * prices["text_in"] + image_in * prices["image_in"] + image_out * prices["image_out"]) / 1_000_000
+    if batch and MODELS.get(model, {}).get("batch_discount"):
+        cost *= BATCH_DISCOUNT
+    return cost
+
+
+# ---------- Sizing ----------
+
+
+def parse_size(text: str | None) -> tuple:
+    """'1536x864' -> (1536, 864). 'auto' or None -> (None, None)."""
+    if not text or text == "auto":
+        return (None, None)
+    match = re.fullmatch(r"(\d+)\s*[x×]\s*(\d+)", text.strip())
+    if not match:
+        print(
+            f"Error: could not read size '{text}'. Use WIDTHxHEIGHT, for example 1536x864, or 'auto'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def size_problem(width: int, height: int) -> str | None:
+    """Why the API would reject this size, or None if it would not.
+
+    Checked here rather than at the API because a rejected request still costs
+    a round trip and an opaque error, and every one of these limits is
+    documented and stable.
+    """
+    if width % SIZE_STEP or height % SIZE_STEP:
+        return f"both edges must be multiples of {SIZE_STEP}px (got {width}x{height})"
+    if max(width, height) > MAX_EDGE:
+        return f"the longest edge must be {MAX_EDGE}px or less (got {max(width, height)})"
+    ratio = max(width, height) / min(width, height)
+    if ratio > 3.0001:
+        return f"the aspect ratio must sit between 1:3 and 3:1 (got {ratio:.2f}:1)"
+    pixels = width * height
+    if pixels < MIN_PIXELS:
+        return f"the total pixel count must be at least {MIN_PIXELS:,} (got {pixels:,})"
+    if pixels > MAX_PIXELS:
+        return f"the total pixel count must be at most {MAX_PIXELS:,} (got {pixels:,})"
+    return None
+
+
+def snap_size(width: int, height: int) -> tuple:
+    """Nearest API-legal generation size at (near enough) the requested aspect.
+
+    Rounds each edge UP to a multiple of 16, so the generated image is never
+    smaller than the target and the final fit is always a downscale. A crop
+    throws away pixels that were paid for; a downscale does not.
+    """
+
+    def round_up(value: float) -> int:
+        return int((int(value) + SIZE_STEP - 1) // SIZE_STEP * SIZE_STEP)
+
+    w, h = round_up(width), round_up(height)
+    aspect = w / h
+
+    pixels = w * h
+    if pixels < MIN_PIXELS:
+        scale = (MIN_PIXELS / pixels) ** 0.5 * 1.02
+        w, h = round_up(w * scale), round_up(h * scale)
+    elif pixels > MAX_PIXELS:
+        scale = (MAX_PIXELS / pixels) ** 0.5
+        w, h = round_up(w * scale), round_up(h * scale)
+        while w * h > MAX_PIXELS and w > SIZE_STEP and h > SIZE_STEP:
+            w -= SIZE_STEP
+            h = round_up(w / aspect)
+
+    while max(w, h) > MAX_EDGE:
+        if w >= h:
+            w -= SIZE_STEP
+            h = round_up(w / aspect)
+        else:
+            h -= SIZE_STEP
+            w = round_up(h * aspect)
+
+    if max(w, h) / min(w, h) > 3:
+        if w > h:
+            w = h * 3
+        else:
+            h = w * 3
+    return (w, h)
+
+
+def size_for(args_size: str | None, platform: dict | None) -> str | None:
+    """The size string to send. --size wins; --platform sets it when absent."""
+    width, height = parse_size(args_size)
+    if width:
+        problem = size_problem(width, height)
+        if problem:
+            fixed = snap_size(width, height)
+            print(
+                f"Error: {args_size} is not a valid generation size - {problem}.\n"
+                f"       The nearest legal size is {fixed[0]}x{fixed[1]}.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return f"{width}x{height}"
+    if platform:
+        w, h = snap_size(int(platform["width"]), int(platform["height"]))
+        return f"{w}x{h}"
+    return None
 
 
 # ---------- Config & secrets ----------
@@ -135,20 +434,22 @@ def load_platforms() -> dict[str, dict]:
     return {}
 
 
-def compose_prompt(user_prompt: str, preset_name: str | None) -> tuple[str, str | None]:
-    """Return (final_prompt, preset_thinking_level)."""
+def compose_prompt(user_prompt: str, preset_name: str | None) -> str:
     if not preset_name:
-        return user_prompt, None
+        return user_prompt
     presets = load_presets()
     if preset_name not in presets:
-        print(f"Error: unknown preset '{preset_name}'. Available: {', '.join(presets.keys())}", file=sys.stderr)
+        print(
+            f"Error: unknown preset '{preset_name}'. Available: {', '.join(presets.keys())}",
+            file=sys.stderr,
+        )
         sys.exit(1)
-    preset = presets[preset_name]
-    prompt = preset["prompt"].replace("{subject}", user_prompt)
-    return prompt, preset.get("thinking")
+    return presets[preset_name]["prompt"].replace("{subject}", user_prompt)
 
 
 # ---------- Image I/O ----------
+
+FORMAT_SUFFIX = {"png": ".png", "jpeg": ".jpg", "webp": ".webp"}
 
 
 def encode_image(path: str) -> str:
@@ -187,7 +488,7 @@ def platform_fit(image_path: Path, width: int, height: int) -> None:
     )
 
 
-def make_contact_sheet(images: list[Path], output: Path, cols: int = 3) -> None:
+def make_contact_sheet(images: list, output: Path, cols: int = 3) -> None:
     if not shutil.which("magick"):
         print("Warning: ImageMagick not found, skipping contact sheet", file=sys.stderr)
         return
@@ -201,15 +502,20 @@ def make_contact_sheet(images: list[Path], output: Path, cols: int = 3) -> None:
 # ---------- API ----------
 
 
-MIME_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
 
 
-def _build_multipart(fields: list[tuple[str, str | bytes, str | None]]) -> tuple[bytes, str]:
+def _build_multipart(fields: list) -> tuple:
     """Build multipart/form-data body. Each field is (name, value, filename_or_None)."""
     import uuid
 
     boundary = uuid.uuid4().hex
-    lines: list[bytes] = []
+    lines: list = []
     for name, value, filename in fields:
         lines.append(f"--{boundary}".encode())
         if filename:
@@ -227,100 +533,163 @@ def _build_multipart(fields: list[tuple[str, str | bytes, str | None]]) -> tuple
     return body, content_type
 
 
+def describe_api_error(body: str) -> tuple:
+    """(human message, is it worth retrying).
+
+    A blocked prompt and a transient failure look the same to anything reading
+    only the status code, and retrying a refusal four times just spends four
+    times as long arriving at the same refusal.
+    """
+    try:
+        error = (json.loads(body) or {}).get("error") or {}
+    except Exception:  # noqa: BLE001
+        return body, True
+    code = error.get("code") or ""
+    etype = error.get("type") or ""
+    message = error.get("message") or body
+    if code == "moderation_blocked":
+        details = error.get("moderation_details") or {}
+        stage = details.get("moderation_stage", "unknown")
+        categories = ", ".join(details.get("categories") or []) or "unspecified"
+        return (
+            f"Moderation blocked this request at the {stage} stage ({categories}). "
+            f"Change the prompt or the input images - retrying as-is will not help. "
+            f"If the subject is legitimate, --moderation low is the less restrictive setting.",
+            False,
+        )
+    if etype == "image_generation_user_error":
+        return (
+            f"{message} (code: {code or 'none'}). This needs the request changed, not retried.",
+            False,
+        )
+    return (f"{message} (type: {etype or 'unknown'}, code: {code or 'none'})", True)
+
+
 def api_request(
     prompt: str,
     provider: str,
     api_key: str,
-    thinking: str = "off",
-    size: str = "1024x1024",
-    quality: str = "high",
+    model: str = DEFAULT_MODEL,
+    size: str | None = None,
+    quality: str = "low",
     n: int = 1,
-    seed: int | None = None,
     edit_image: str | None = None,
-    reference_images: list[str] | None = None,
-) -> list[str]:
-    """Call the OpenAI/OpenRouter image generation API. Returns list of base64 images."""
+    reference_images: list | None = None,
+    mask: str | None = None,
+    background: str | None = None,
+    output_format: str | None = None,
+    output_compression: int | None = None,
+    moderation: str | None = None,
+) -> tuple:
+    """Call the generation/edit API. Returns (list of base64 images, usage dict)."""
     prov = PROVIDERS[provider]
-    is_edit = bool(edit_image or reference_images)
+    is_edit = bool(edit_image or reference_images or mask)
 
-    if is_edit:
-        url = prov["edit_url"]
-        fields: list[tuple[str, str | bytes, str | None]] = [
-            ("model", MODEL, None),
-            ("prompt", prompt, None),
-            ("n", str(n), None),
-            ("size", size, None),
-            ("quality", quality, None),
-        ]
-        # seed parameter reserved for future API support
-        if edit_image:
-            with open(edit_image, "rb") as f:
-                fields.append(("image[]", f.read(), Path(edit_image).name))
-        if reference_images:
-            for ref in reference_images:
+    def build_request():
+        if is_edit:
+            fields = [
+                ("model", model, None),
+                ("prompt", prompt, None),
+                ("n", str(n), None),
+                ("quality", quality, None),
+            ]
+            if size:
+                fields.append(("size", size, None))
+            if background:
+                fields.append(("background", background, None))
+            if output_format:
+                fields.append(("output_format", output_format, None))
+            if output_compression is not None:
+                fields.append(("output_compression", str(output_compression), None))
+            if moderation:
+                fields.append(("moderation", moderation, None))
+            if edit_image:
+                with open(edit_image, "rb") as f:
+                    fields.append(("image[]", f.read(), Path(edit_image).name))
+            for ref in reference_images or []:
                 with open(ref, "rb") as f:
                     fields.append(("image[]", f.read(), Path(ref).name))
-        data, content_type = _build_multipart(fields)
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": content_type,
-        }
-    else:
-        url = prov["url"]
-        body: dict[str, Any] = {
-            "model": MODEL,
-            "prompt": prompt,
-            "n": n,
-            "size": size,
-            "quality": quality,
-            "output_format": "png",
-        }
-        # thinking parameter reserved for future API support
-        # (not yet accepted on /v1/images/generations endpoint)
-        # seed parameter reserved for future API support
-        data = json.dumps(body).encode("utf-8")
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
-    if provider == "openrouter":
-        headers["HTTP-Referer"] = "https://github.com/glebis/claude-skills"
-        headers["X-Title"] = "gpt-image-2-skill"
-
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            if mask:
+                with open(mask, "rb") as f:
+                    fields.append(("mask", f.read(), Path(mask).name))
+            data, content_type = _build_multipart(fields)
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": content_type}
+            url = prov["edit_url"]
+        else:
+            body: dict[str, Any] = {
+                "model": model,
+                "prompt": prompt,
+                "n": n,
+                "quality": quality,
+                "output_format": output_format or "png",
+            }
+            if size:
+                body["size"] = size
+            if background:
+                body["background"] = background
+            if output_compression is not None:
+                body["output_compression"] = output_compression
+            if moderation:
+                body["moderation"] = moderation
+            data = json.dumps(body).encode("utf-8")
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            url = prov["url"]
+        if provider == "openrouter":
+            headers["HTTP-Referer"] = "https://github.com/dbhq-uk/gpt-image-2-skill"
+            headers["X-Title"] = "gpt-image-2-skill"
+        return urllib.request.Request(url, data=data, headers=headers, method="POST")
 
     max_retries = 4
     for attempt in range(max_retries):
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
+            # Rebuilt each attempt: a Request that has already been sent is not
+            # guaranteed safe to hand back to urlopen.
+            with urllib.request.urlopen(build_request(), timeout=900) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 resp_data = result.get("data")
                 if not resp_data:
                     print("Error: API returned no image data.", file=sys.stderr)
                     sys.exit(1)
-                images = []
-                for item in resp_data:
-                    b64 = item.get("b64_json")
-                    if b64:
-                        images.append(b64)
+                images = [item["b64_json"] for item in resp_data if item.get("b64_json")]
                 if not images:
                     print("Error: API response missing b64_json fields.", file=sys.stderr)
                     sys.exit(1)
-                return images
+                return images, (result.get("usage") or {})
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
-            if e.code == 429 or e.code >= 500:
+            message, retryable = describe_api_error(error_body)
+            if retryable and (e.code == 429 or e.code >= 500):
                 if attempt < max_retries - 1:
                     wait = 2 ** (attempt + 1)
                     label = "Rate limited" if e.code == 429 else f"Server error {e.code}"
-                    print(f"{label}, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...", file=sys.stderr)
+                    print(
+                        f"{label}, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...",
+                        file=sys.stderr,
+                    )
                     time.sleep(wait)
-                else:
-                    print(f"Failed after {max_retries} attempts. Last error {e.code}: {error_body}", file=sys.stderr)
-                    sys.exit(1)
+                    continue
+                print(
+                    f"Failed after {max_retries} attempts. Last error {e.code}: {message}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(f"Error {e.code}: {message}", file=sys.stderr)
+            sys.exit(1)
+        except TimeoutError:
+            # A socket read timeout is NOT a URLError - without this branch it
+            # escapes the retry loop entirely and crashes with a raw traceback.
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                print(
+                    f"Read timed out, retrying in {wait}s (attempt {attempt + 1}/{max_retries})...",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
             else:
-                print(f"Error {e.code}: {error_body}", file=sys.stderr)
+                print(
+                    f"Failed after {max_retries} attempts: the API did not respond in time.",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
         except urllib.error.URLError as e:
             if attempt < max_retries - 1:
@@ -330,7 +699,7 @@ def api_request(
             else:
                 print(f"Failed after {max_retries} attempts: {e.reason}", file=sys.stderr)
                 sys.exit(1)
-    return []
+    return [], {}
 
 
 # ---------- History ----------
@@ -342,14 +711,19 @@ class HistoryEntry:
     prompt: str
     preset: str | None
     platform: str | None
-    thinking: str
+    model: str
     quality: str
+    size: str | None
+    background: str | None
+    output_format: str
     provider: str
     n: int
-    seed: int | None
     output: str
+    output_dir: str
     project: str | None
     estimated_cost: float | None
+    actual_cost: float | None
+    usage: dict | None
 
 
 def save_history(entry: HistoryEntry) -> None:
@@ -360,19 +734,12 @@ def save_history(entry: HistoryEntry) -> None:
         json.dump(asdict(entry), f, indent=2)
 
 
-def load_history(n: int = 20, project: str | None = None) -> list[dict]:
-    if not HISTORY_FILE.exists():
-        return []
+def load_history(n: int = 20, project: str | None = None) -> list:
     entries = []
-    with HISTORY_FILE.open() as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            entry = json.loads(line)
-            if project and entry.get("project") != project:
-                continue
-            entries.append(entry)
+    for entry in read_history_entries():
+        if project and entry.get("project") != project:
+            continue
+        entries.append(entry)
     return entries[-n:]
 
 
@@ -381,6 +748,92 @@ def load_last_run() -> dict | None:
         return None
     with LAST_RUN_FILE.open() as f:
         return json.load(f)
+
+
+def entry_dir(entry: dict) -> str | None:
+    """Which directory this history row wrote into.
+
+    Rows written before output_dir existed stored a FILE path for single-image
+    runs and a DIRECTORY path for multi-image ones, with nothing to tell them
+    apart - so a --n 4 run recorded /a/b, and set-check then compared /a
+    against /a/b and missed it. New rows carry output_dir outright; old ones
+    are resolved by looking at the path.
+    """
+    direct = entry.get("output_dir")
+    if direct:
+        return direct
+    out = entry.get("output")
+    if not out:
+        return None
+    path = Path(out)
+    if path.suffix:
+        return str(path.parent)
+    return str(path)
+
+
+def dir_matches(where: str, target: str) -> bool:
+    """Does this history row's directory refer to `target` (an absolute path)?
+
+    New rows store an absolute directory. Legacy rows stored whatever the caller
+    typed, so 101 of them hold things like `brand/graphics/aurora` - relative to
+    a working directory nobody recorded. Resolving those against the CURRENT
+    directory would silently attribute one folder's house tier to another, so
+    they are matched on a whole-path-component suffix instead, and a bare "."
+    (which carries no information and would otherwise match everything) is
+    dropped.
+    """
+    path = Path(where)
+    if path.is_absolute():
+        try:
+            return str(path.resolve()) == target
+        except Exception:  # noqa: BLE001
+            return False
+    parts = tuple(p for p in path.parts if p not in (".", ""))
+    if not parts:
+        return False
+    return Path(target).parts[-len(parts) :] == parts
+
+
+def set_profile(output_path) -> dict:
+    """What model and quality this directory's SET was made at.
+
+    THE CHECK THAT WAS MISSING. A directory of images is a SET, and a set has a
+    house setting somebody already chose. On 2026-08-21 all three tiers were run
+    side by side for ScentPrism's note art - the history still holds them as
+    q-low, q-medium and q-high - and LOW was picked, because the images ship at
+    300x400 and the extra detail is thrown away by the downscale. Two days later
+    a new batch went out at HIGH for no reason except that high is the default,
+    at 35x the price and no visible difference.
+
+    Nothing had to be guessed to avoid that. The answer was in history.jsonl the
+    whole time. Model is tracked for the same reason: a set that is half Flare
+    and half gpt-image-2 does not read as one set either.
+    """
+    try:
+        target = str(Path(output_path).resolve().parent)
+    except Exception:  # noqa: BLE001
+        return {"quality": None, "model": None, "count": 0}
+    qualities: dict = {}
+    models: dict = {}
+    count = 0
+    for e in read_history_entries():
+        where = entry_dir(e)
+        if not where or not dir_matches(where, target):
+            continue
+        count += e.get("n") or 1
+        q = e.get("quality")
+        # Rows predating --model were all gpt-image-2; there was nothing else.
+        m = e.get("model") or "gpt-image-2"
+        if q:
+            qualities[q] = qualities.get(q, 0) + 1
+        models[m] = models.get(m, 0) + 1
+    if not count:
+        return {"quality": None, "model": None, "count": 0}
+    return {
+        "quality": max(qualities, key=qualities.get) if qualities else None,
+        "model": max(models, key=models.get) if models else None,
+        "count": count,
+    }
 
 
 # ---------- Metadata ----------
@@ -396,15 +849,12 @@ def save_metadata(output_path: Path, entry: HistoryEntry) -> None:
 
 
 def cmd_init():
-    print("🔧 GPT Image 2 - Setup Wizard\n")
+    print("GPT Image - Setup Wizard\n")
 
-    deps = {"magick": shutil.which("magick")}
-    for name, path in deps.items():
-        status = f"✅ {path}" if path else "❌ not found"
-        print(f"  {name}: {status}")
-
-    if not deps["magick"]:
-        print("\n⚠  ImageMagick not found. Platform resizing and contact sheets will be unavailable.")
+    magick = shutil.which("magick")
+    print(f"  magick: {'OK ' + magick if magick else 'not found'}")
+    if not magick:
+        print("\n  ImageMagick not found. Platform fitting and contact sheets will be unavailable.")
         print("  macOS: brew install imagemagick")
         print("  Linux: sudo apt install imagemagick")
 
@@ -412,36 +862,54 @@ def cmd_init():
     for provider_name in PROVIDERS:
         key = get_api_key(provider_name)
         if key:
-            masked = key[:8] + "..." + key[-4:]
-            print(f"  {provider_name} key: ✅ {masked}")
+            print(f"  {provider_name} key: OK {key[:8]}...{key[-4:]}")
         else:
-            print(f"  {provider_name} key: ❌ not found")
+            print(f"  {provider_name} key: not found")
 
     ensure_config_dir()
     defaults = load_config()
     if not defaults:
-        defaults = {
-            "provider": "openai",
-            "thinking": "off",
-            "quality": "high",
-            "size": "1024x1024",
-        }
+        # Quality is deliberately absent. Writing one here used to pin it to
+        # "high", which silently overrode the low default the whole draft-first
+        # flow depends on - the wizard reintroduced the bug the default was
+        # changed to prevent.
+        defaults = {"provider": "openai", "model": DEFAULT_MODEL}
         with CONFIG_FILE.open("w") as f:
             yaml.dump(defaults, f, default_flow_style=False)
-        print(f"\n✅ Config saved to {CONFIG_FILE}")
+        print(f"\nConfig saved to {CONFIG_FILE}")
     else:
-        print(f"\n✅ Config already exists at {CONFIG_FILE}")
+        print(f"\nConfig already exists at {CONFIG_FILE}")
+        if defaults.get("quality"):
+            print(
+                f"  Warning: config.yaml pins quality={defaults['quality']}, which overrides the "
+                f"low default on every call. Remove the line unless you meant it."
+            )
 
-    print("\n📊 Pricing (per image):")
+    print("\nRoughly, per image at 1024x1024 (gpt-image-2 published figures):")
     print("  quality=low:    $0.006 (draft)  - fast iteration")
-    print("  quality=medium: $0.05           - good for review")
-    print("  quality=high:   $0.21 (default) - production")
-    print("  + thinking adds 20-100% on top")
+    print("  quality=medium: $0.053          - good for review")
+    print("  quality=high:   $0.211          - production")
+    print("  xhigh / max:    2.5 models only, dearer again")
+    print("\n  Real cost is read back from the API's token usage after each call,")
+    print("  so history.jsonl holds what was actually billed, not this table.")
 
-    print("\nReady! Try: scripts/gpt_image_2.py \"a cat astronaut\" ./cat.png")
+    print('\nReady. Try: scripts/gpt_image_2.py "a cat astronaut" ./cat.png')
 
 
 # ---------- List commands ----------
+
+
+def cmd_list_models():
+    print("Available models:\n")
+    for name, info in MODELS.items():
+        default = "  (default)" if name == DEFAULT_MODEL else ""
+        print(f"  {name}{default}")
+        print(f"    {info['description']}")
+        print(f"    quality: {', '.join(info['qualities'])}")
+        if info["batch_discount"]:
+            print("    eligible for the 50% Batch API discount")
+        print(f"    aliases: {', '.join(info['aliases'])}")
+        print()
 
 
 def cmd_list_presets():
@@ -451,8 +919,7 @@ def cmd_list_presets():
         return
     print("Available presets:\n")
     for name, info in presets.items():
-        thinking = f" [thinking: {info['thinking']}]" if info.get("thinking") else ""
-        print(f"  {name:16s} {info['description']}{thinking}")
+        print(f"  {name:16s} {info['description']}")
 
 
 def cmd_list_platforms():
@@ -462,7 +929,9 @@ def cmd_list_platforms():
         return
     print("Available platforms:\n")
     for name, info in platforms.items():
-        print(f"  {name:16s} {info['width']}×{info['height']}  ({info['description']})")
+        w, h = snap_size(int(info["width"]), int(info["height"]))
+        note = "" if (w, h) == (info["width"], info["height"]) else f"  [generates {w}x{h}, fits down]"
+        print(f"  {name:16s} {info['width']}x{info['height']}  ({info['description']}){note}")
 
 
 # ---------- Main generate ----------
@@ -474,58 +943,144 @@ def cmd_generate(args):
     api_key = get_api_key(provider)
     if not api_key:
         print(f"Error: No API key found for {provider}.", file=sys.stderr)
-        print(f"Set {PROVIDERS[provider]['key_env']} or run: scripts/gpt_image_2.py init", file=sys.stderr)
+        print(
+            f"Set {PROVIDERS[provider]['key_env']} or run: scripts/gpt_image_2.py init",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    prompt, preset_thinking = compose_prompt(args.prompt, args.preset)
+    model = normalise_model(args.model or config.get("model"))
+    prompt = compose_prompt(args.prompt, args.preset)
 
-    thinking = args.thinking or preset_thinking or config.get("thinking", "off")
-    quality = args.quality or config.get("quality", "high")
-    size = args.size or config.get("size", "1024x1024")
+    # DEFAULT LOW, NOT HIGH. This skill's own documented flow is "always
+    # generate a draft first", and a default of high contradicts it on every
+    # non-interactive call. Ask for high when the image needs it.
+    quality = args.quality or config.get("quality", "low")
     n = args.n or 1
-    seed = getattr(args, "seed", None)
     is_draft = getattr(args, "draft", False)
 
     if is_draft:
         quality = "low"
-        size = "1024x1024"
+
+    if quality not in MODELS[model]["qualities"]:
+        print(
+            f"Error: {model} does not support quality={quality}. It accepts: {', '.join(MODELS[model]['qualities'])}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    platforms = load_platforms()
+    platform = None
+    platform_spec = None
+    if args.platform:
+        if args.platform not in platforms:
+            print(f"Warning: unknown platform '{args.platform}', skipping resize", file=sys.stderr)
+        else:
+            platform = args.platform
+            platform_spec = platforms[args.platform]
+
+    # Generate at the platform's own aspect rather than generating a square and
+    # cropping it. A crop discards pixels that were paid for and re-frames the
+    # image after the model has already composed it.
+    size = None if is_draft else size_for(args.size or config.get("size"), platform_spec)
+
+    output_format = args.output_format or "png"
+    background = args.background
+    if background == "transparent" and output_format == "jpeg":
+        print(
+            "Note: JPEG has no alpha channel; using png so the transparent background survives.",
+            file=sys.stderr,
+        )
+        output_format = "png"
 
     output_path = (
-        Path(args.output) if args.output else Path(f"./gpt-image-2-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png")
+        Path(args.output) if args.output else Path(f"./gpt-image-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png")
     )
 
     if args.project:
         base_dir = Path.home() / "gpt-image-2" / "outputs" / args.project
-        slug = re.sub(r'[^a-z0-9]+', '-', args.prompt.lower()[:40]).strip('-')
+        slug = re.sub(r"[^a-z0-9]+", "-", args.prompt.lower()[:40]).strip("-")
         output_path = base_dir / f"{datetime.now().strftime('%Y%m%d')}-{slug}.png"
 
-    cost = estimate_cost(quality, thinking, n)
-    per = cost_per_unit(quality, thinking)
+    valid_suffixes = {"png": (".png",), "jpeg": (".jpg", ".jpeg"), "webp": (".webp",)}
+    if output_path.suffix.lower() not in valid_suffixes[output_format]:
+        output_path = output_path.with_suffix(FORMAT_SUFFIX[output_format])
+
+    # WHAT DID THIS SET USE LAST TIME? Adopt it unless the caller said otherwise.
+    house = set_profile(output_path)
+    if house["count"] and not is_draft:
+        if not args.quality and house["quality"] and house["quality"] != quality:
+            print(
+                f"Matching the set: {output_path.parent} already holds {house['count']} image(s) "
+                f"made at quality={house['quality']}. Pass --quality to override.",
+                file=sys.stderr,
+            )
+            quality = house["quality"]
+        elif args.quality and house["quality"] and args.quality != house["quality"]:
+            print(
+                f"Warning: {output_path.parent} already holds {house['count']} image(s) made at "
+                f"quality={house['quality']}, and you asked for {args.quality}. A set that does "
+                f"not match itself is the defect this warning exists for.",
+                file=sys.stderr,
+            )
+        if not args.model and house["model"] and house["model"] != model:
+            print(
+                f"Matching the set: it was generated on {house['model']}. A set that is half one "
+                f"model and half another does not read as one set. Pass --model to override.",
+                file=sys.stderr,
+            )
+            model = house["model"]
+            if quality not in MODELS[model]["qualities"]:
+                quality = "high"
+        elif args.model and house["model"] and model != house["model"]:
+            print(
+                f"Warning: that set was generated on {house['model']}, and you asked for {model}.",
+                file=sys.stderr,
+            )
+
+    size_label = size or "auto"
+    per, basis = cost_per_unit(model, quality, size_label)
+    cost = per * n
     mode_label = "DRAFT" if is_draft else quality.upper()
 
     if args.dry_run:
         print(f"Mode:      {mode_label}")
         print(f"Prompt:    {prompt}")
         print(f"Provider:  {provider}")
-        print(f"Thinking:  {thinking}")
+        print(f"Model:     {model}")
         print(f"Quality:   {quality}")
-        print(f"Size:      {size}")
+        print(f"Size:      {size_label}")
+        if platform_spec:
+            print(f"Platform:  {platform} -> fits down to {platform_spec['width']}x{platform_spec['height']}")
+        print(f"Format:    {output_format}")
+        if background:
+            print(f"Background: {background}")
         print(f"N:         {n}")
-        if seed is not None:
-            print(f"Seed:      {seed}")
         print(f"Output:    {output_path}")
-        print(f"Est. cost: ${cost:.3f}")
+        print(f"Est. cost: ${cost:.3f} ({basis})")
         return
 
     if args.estimate:
         print(
-            f"Estimated cost ({mode_label}): ${cost:.3f} ({n} image{'s' if n > 1 else ''} × ~${per:.3f}/image, quality={quality}, thinking={thinking})"
+            f"Estimated cost ({mode_label}): ${cost:.3f} "
+            f"({n} image{'s' if n > 1 else ''} x ~${per:.3f}/image, {model}, "
+            f"quality={quality}, size={size_label}) [{basis}]"
         )
+        if MODELS[model]["batch_discount"] and n > 1:
+            print(f"  Via the Batch API that same run is ~${cost * BATCH_DISCOUNT:.3f} (50% off, {model}).")
         return
 
     no_confirm = getattr(args, "yes", False)
+    already = spend_today()
+    if already + cost >= DAILY_WARN:
+        print(
+            f"Warning: ${already:.2f} already spent through this skill today; this call adds "
+            f"${cost:.2f}. Per-call confirmation does not see a batch - check that the "
+            f"quality tier is the one this set needs.",
+            file=sys.stderr,
+        )
     if not no_confirm and cost >= CONFIRM_THRESHOLD:
-        print(f"⚠  Estimated cost: ${cost:.2f} ({n} × ~${per:.3f}/image, {mode_label})")
+        print(f"Estimated cost: ${cost:.2f} ({n} x ~${per:.3f}/image, {mode_label}, {basis})")
         try:
             answer = input("Proceed? [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -535,21 +1090,27 @@ def cmd_generate(args):
             sys.exit(0)
 
     print(
-        f"Generating {mode_label} with {provider} (thinking: {thinking}, quality: {quality}, size: {size}{f', seed: {seed}' if seed else ''})...",
+        f"Generating {mode_label} with {provider}/{model} "
+        f"(quality: {quality}, size: {size_label}, format: {output_format}"
+        f"{', background: ' + background if background else ''})...",
         file=sys.stderr,
     )
 
-    images = api_request(
+    images, usage = api_request(
         prompt=prompt,
         provider=provider,
         api_key=api_key,
-        thinking=thinking,
+        model=model,
         size=size,
         quality=quality,
         n=n,
-        seed=seed,
         edit_image=args.edit,
         reference_images=args.reference,
+        mask=args.mask,
+        background=background,
+        output_format=output_format,
+        output_compression=args.output_compression,
+        moderation=args.moderation,
     )
 
     if not images:
@@ -560,53 +1121,59 @@ def cmd_generate(args):
     if len(images) == 1:
         save_image(images[0], output_path)
         saved_paths.append(output_path)
-        print(f"✅ {output_path}")
+        print(f"Saved {output_path}")
     else:
-        stem = output_path.stem
-        suffix = output_path.suffix
-        parent = output_path.parent
+        stem, suffix, parent = output_path.stem, output_path.suffix, output_path.parent
         for i, img_data in enumerate(images, 1):
             p = parent / f"{stem}-{i:02d}{suffix}"
             save_image(img_data, p)
             saved_paths.append(p)
-            print(f"✅ {p}")
+            print(f"Saved {p}")
         contact = parent / f"{stem}-contact{suffix}"
         make_contact_sheet(saved_paths, contact)
         if contact.exists():
-            print(f"✅ {contact} (contact sheet)")
+            print(f"Saved {contact} (contact sheet)")
 
-    platform = None
-    if args.platform:
-        platforms = load_platforms()
-        if args.platform not in platforms:
-            print(f"Warning: unknown platform '{args.platform}', skipping resize", file=sys.stderr)
-        else:
-            plat = platforms[args.platform]
-            platform = args.platform
-            for p in saved_paths:
-                platform_fit(p, plat["width"], plat["height"])
-            print(f"  Resized to {plat['width']}×{plat['height']} ({args.platform})")
+    if platform_spec:
+        for p in saved_paths:
+            platform_fit(p, platform_spec["width"], platform_spec["height"])
+        print(f"  Fitted to {platform_spec['width']}x{platform_spec['height']} ({platform})")
 
-    actual_cost = estimate_cost(quality, thinking, len(images))
+    estimated = per * len(images)
+    actual = cost_from_usage(model, usage)
     entry = HistoryEntry(
         timestamp=datetime.now().isoformat(),
         prompt=args.prompt,
         preset=args.preset,
         platform=platform,
-        thinking=thinking,
+        model=model,
         quality=quality,
+        size=size_label,
+        background=background,
+        output_format=output_format,
         provider=provider,
         n=len(images),
-        seed=seed,
-        output=str(saved_paths[0] if len(saved_paths) == 1 else saved_paths[0].parent),
+        # Absolute, always. A relative "." recorded from one directory would
+        # match every other directory the CLI is later run from, and set_profile
+        # would hand back some unrelated folder's house tier.
+        output=str(saved_paths[0].resolve()),
+        output_dir=str(saved_paths[0].resolve().parent),
         project=args.project,
-        estimated_cost=actual_cost,
+        estimated_cost=estimated,
+        actual_cost=actual,
+        usage=usage or None,
     )
     save_history(entry)
     for p in saved_paths:
         save_metadata(p, entry)
 
-    print(f"  Est. cost: ${actual_cost:.3f}")
+    if actual is not None:
+        drift = ""
+        if estimated and abs(actual - estimated) / max(estimated, 1e-9) > 0.25:
+            drift = f" (the estimate said ${estimated:.3f})"
+        print(f"  Billed: ${actual:.4f}{drift}")
+    else:
+        print(f"  Est. cost: ${estimated:.3f} (the API returned no usage block)")
 
 
 # ---------- Again ----------
@@ -621,14 +1188,18 @@ def cmd_again(args):
     args.prompt = last["prompt"]
     args.preset = last.get("preset")
     args.platform = last.get("platform")
-    args.thinking = last.get("thinking", "off")
     args.provider = last.get("provider", "openai")
+    args.model = last.get("model")
     args.n = last.get("n", 1)
-    args.quality = last.get("quality", "high")
-    args.size = "1024x1024"
-    args.seed = last.get("seed")
+    args.quality = last.get("quality", "low")
+    args.size = last.get("size")
+    args.background = last.get("background")
+    args.output_format = last.get("output_format", "png")
+    args.output_compression = None
+    args.moderation = None
     args.edit = None
     args.reference = None
+    args.mask = None
     args.project = last.get("project")
     args.dry_run = False
     args.estimate = False
@@ -636,6 +1207,49 @@ def cmd_again(args):
     args.yes = False
     args.output = None
     cmd_generate(args)
+
+
+# ---------- Set check ----------
+
+
+def cmd_set_check(args):
+    """What model and quality did this set use, and what would a batch cost?
+
+    STEP 0 OF SKILL.md. Run this before adding to any directory that already
+    has images, including - especially - from a script that calls the API
+    itself and never touches the rest of this file.
+    """
+    target = Path(args.path)
+    probe = target if target.suffix else target / "x.png"
+    house = set_profile(probe)
+    where = target if target.suffix == "" else target.parent
+    model = house["model"] or DEFAULT_MODEL
+    if not house["count"]:
+        print(
+            f"{where}: no history for this directory. It is a new set, so YOU are choosing "
+            f"the house tier. Choose low unless the output is displayed large."
+        )
+    else:
+        print(f"{where}: {house['count']} image(s) previously made at quality={house['quality']} on {house['model']}.")
+        print(
+            "MATCH BOTH. A set at two tiers does not look like one set, a set on two models "
+            "even less so, and the difference is usually invisible anyway once the image is "
+            "scaled to its published size."
+        )
+    spent = spend_today()
+    if spent:
+        print(f"\nSpent through this skill today: ${spent:.2f} (does NOT include scripts that call the API directly).")
+    batch = args.n or 100
+    print(f"\nA batch of {batch:,} on {model} would cost:")
+    for tier in MODELS[model]["qualities"]:
+        if tier == "auto":
+            continue
+        per, basis = cost_per_unit(model, tier, "1024x1024")
+        mark = "  <- the set's tier" if tier == house["quality"] else ""
+        print(f"   {tier:7} ${per * batch:>10,.2f}  [{basis}]{mark}")
+    if MODELS[model]["batch_discount"]:
+        print(f"\n   {model} is eligible for the Batch API's 50% discount on a run that size.")
+    return 0
 
 
 # ---------- History ----------
@@ -648,53 +1262,103 @@ def cmd_history(args):
         return
     for e in entries:
         ts = e["timestamp"][:19]
-        prompt = e["prompt"][:50]
-        cost = f"${e.get('estimated_cost', 0):.3f}" if e.get("estimated_cost") else "?"
+        prompt = e["prompt"][:46]
+        billed = entry_cost(e)
+        # ~ marks an estimate; a bare figure is what the API said it billed.
+        marker = "" if e.get("actual_cost") else "~"
+        cost = f"{marker}${billed:.3f}" if billed else "?"
         preset = f" [{e['preset']}]" if e.get("preset") else ""
-        q = e.get("quality", "high")
-        thinking = f" t:{e['thinking']}" if e.get("thinking", "off") != "off" else ""
-        seed_str = f" s:{e['seed']}" if e.get("seed") else ""
-        print(f"  {ts}  {cost:>7s}  q:{q:<6s}{thinking}{seed_str}  {prompt}{preset}")
+        q = e.get("quality", "?")
+        model = (e.get("model") or "gpt-image-2").replace("gpt-image-", "")
+        print(f"  {ts}  {cost:>8s}  {model:<14s} q:{q:<6s}  {prompt}{preset}")
+
+
+# ---------- Retired flags ----------
+
+# --seed and --thinking were carried over from the upstream skill, which
+# documented both and sent neither. Neither parameter exists anywhere in the
+# OpenAI image API: both are absent from CreateImageRequest and
+# CreateImageEditRequest in openai/openai-openapi, and from the whole image
+# generation guide. --thinking was worse than inert, because the cost estimate
+# multiplied by it, so the confirmation gate and the daily warning both fired
+# on numbers describing a request nobody had ever sent.
+#
+# They fail loudly rather than being quietly dropped from the parser, because a
+# script that still passes --seed is a script whose author believes composition
+# is being locked between draft and final. Silence would leave that belief
+# intact.
+
+RETIRED_FLAGS = {
+    "--seed": (
+        "The image API has no seed parameter - not on generations, not on edits. "
+        "The old skill accepted --seed, logged it, and never sent it, so no run was "
+        "ever reproducible.\n"
+        "       For consistency across a set, carry it in the prompt instead: name the "
+        "palette, the lighting, the camera and the recurring subject's 5-tuple (age, "
+        "appearance, hairstyle, distinctive features, clothing) in every prompt, and use "
+        "--reference to pin the look to an image you have already accepted."
+    ),
+    "--thinking": (
+        "The image API has no thinking parameter. The old skill priced it into the cost "
+        "estimate and never sent it.\n"
+        "       For complex layouts and dense text, raise --quality instead (the 2.5 models "
+        "add xhigh and max), or use --model sunburst, which is the one built for fine "
+        "detail and typography."
+    ),
+}
+
+
+def reject_retired_flags(argv: list) -> None:
+    for flag, why in RETIRED_FLAGS.items():
+        if flag in argv or any(a.startswith(flag + "=") for a in argv):
+            print(f"Error: {flag} has been removed. {why}", file=sys.stderr)
+            sys.exit(2)
 
 
 # ---------- CLI ----------
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "init":
-        cmd_init()
-        return
+    reject_retired_flags(sys.argv[1:])
 
-    if len(sys.argv) > 1 and sys.argv[1] == "list-presets":
-        cmd_list_presets()
-        return
-
-    if len(sys.argv) > 1 and sys.argv[1] == "list-platforms":
-        cmd_list_platforms()
+    simple = {
+        "init": cmd_init,
+        "list-models": cmd_list_models,
+        "list-presets": cmd_list_presets,
+        "list-platforms": cmd_list_platforms,
+    }
+    if len(sys.argv) > 1 and sys.argv[1] in simple:
+        simple[sys.argv[1]]()
         return
 
     parser = argparse.ArgumentParser(
-        description="GPT Image 2 - OpenAI Image Generation",
-        epilog="Commands: init, list-presets, list-platforms, again, history",
+        description="GPT Image - OpenAI Image Generation",
+        epilog="Commands: init, list-models, list-presets, list-platforms, again, history, set-check",
     )
     sub = parser.add_subparsers(dest="command")
 
     gen_parser = argparse.ArgumentParser(
         prog="gpt_image_2.py",
-        description="GPT Image 2 - Generate images from text prompts",
+        description="GPT Image - Generate images from text prompts",
     )
     gen_parser.add_argument("prompt", nargs="?", help="Text prompt for image generation")
     gen_parser.add_argument("output", nargs="?", help="Output file path (default: auto-named)")
+    gen_parser.add_argument("--model", help=f"Model or alias (default: {DEFAULT_MODEL})")
     gen_parser.add_argument("--preset", help="Style preset name")
-    gen_parser.add_argument("--platform", help="Platform preset for auto-sizing")
-    gen_parser.add_argument("--thinking", choices=THINKING_LEVELS, help="Thinking level (off/low/medium/high)")
+    gen_parser.add_argument("--platform", help="Platform preset: sets the generation aspect, then fits down")
     gen_parser.add_argument("--provider", choices=list(PROVIDERS.keys()), help="API provider")
-    gen_parser.add_argument("--quality", choices=("low", "medium", "high"), help="Image quality")
-    gen_parser.add_argument("--size", help="Image size (e.g., 1024x1024, 1536x1024, 2000x1024)")
+    gen_parser.add_argument("--quality", choices=QUALITY_CHOICES, help="Image quality (xhigh/max: 2.5 models only)")
+    gen_parser.add_argument("--size", help="WIDTHxHEIGHT, both multiples of 16, or 'auto'")
     gen_parser.add_argument("--n", type=int, help="Number of variants (1-10)")
-    gen_parser.add_argument("--seed", type=int, help="Seed for reproducible output")
     gen_parser.add_argument("--edit", help="Path to image to edit")
     gen_parser.add_argument("--reference", action="append", help="Reference image for style (repeatable)")
+    gen_parser.add_argument("--mask", help="PNG mask: transparent areas mark what to replace")
+    gen_parser.add_argument("--background", choices=("transparent", "opaque", "auto"), help="Image background")
+    gen_parser.add_argument(
+        "--output-format", dest="output_format", choices=("png", "jpeg", "webp"), help="File format"
+    )
+    gen_parser.add_argument("--output-compression", dest="output_compression", type=int, help="0-100, jpeg/webp only")
+    gen_parser.add_argument("--moderation", choices=("low", "auto"), help="Content filter strictness")
     gen_parser.add_argument("--project", help="Project name for organized output")
     gen_parser.add_argument("--dry-run", action="store_true", help="Preview prompt without API call")
     gen_parser.add_argument("--estimate", action="store_true", help="Show cost estimate only")
@@ -707,17 +1371,38 @@ def main():
     sub_history.add_argument("-n", type=int, default=20, help="Number of entries to show")
     sub_history.add_argument("--project", dest="history_project", help="Filter by project")
 
+    sub_set = sub.add_parser("set-check", help="STEP 0: what model and quality did this directory's set use?")
+    sub_set.add_argument("path", help="Directory or file the images will be written to")
+    sub_set.add_argument("-n", type=int, default=100, help="Batch size to cost out")
+
     if len(sys.argv) <= 1 or sys.argv[1] in ("-h", "--help"):
         parser.print_help()
         return
 
-    if sys.argv[1] not in ("again", "history"):
+    if sys.argv[1] not in ("again", "history", "set-check"):
         args = gen_parser.parse_args()
         if not args.prompt:
             gen_parser.print_help()
             sys.exit(1)
         if args.n is not None and (args.n < 1 or args.n > 10):
             print("Error: --n must be between 1 and 10", file=sys.stderr)
+            sys.exit(1)
+        if args.output_compression is not None:
+            if not 0 <= args.output_compression <= 100:
+                print("Error: --output-compression must be between 0 and 100", file=sys.stderr)
+                sys.exit(1)
+            if (args.output_format or "png") == "png":
+                print(
+                    "Error: --output-compression applies to jpeg and webp only. "
+                    "Add --output-format webp, or drop the flag.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        if args.mask and not args.edit:
+            print(
+                "Error: --mask needs --edit: the mask says which part of that image to replace.",
+                file=sys.stderr,
+            )
             sys.exit(1)
         cmd_generate(args)
     else:
@@ -726,6 +1411,8 @@ def main():
             cmd_again(args)
         elif args.command == "history":
             cmd_history(args)
+        elif args.command == "set-check":
+            cmd_set_check(args)
         else:
             parser.print_help()
 

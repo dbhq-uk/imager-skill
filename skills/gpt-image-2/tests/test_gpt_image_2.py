@@ -29,10 +29,16 @@ import gpt_image_2  # noqa: E402
 
 SCRIPT = Path(__file__).parent.parent / "scripts" / "gpt_image_2.py"
 
+# Cost estimates and set-check both read history.jsonl, so the subprocess cases
+# have to run against an empty one. Without this they pass or fail depending on
+# what the machine's owner happened to generate into the working directory.
+_CLI_HOME = tempfile.TemporaryDirectory()
+
 
 def run_cli(*args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["OPENAI_API_KEY"] = "test-key-not-real"
+    env["GPT_IMAGE_HOME"] = _CLI_HOME.name
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
@@ -40,40 +46,263 @@ def run_cli(*args: str, env_extra: dict | None = None) -> subprocess.CompletedPr
         capture_output=True,
         text=True,
         env=env,
+        cwd=_CLI_HOME.name,
     )
 
 
+class TestModels(unittest.TestCase):
+    def test_default_model_is_a_known_model(self):
+        self.assertIn(gpt_image_2.DEFAULT_MODEL, gpt_image_2.MODELS)
+
+    def test_aliases_resolve_to_canonical_names(self):
+        for canonical, info in gpt_image_2.MODELS.items():
+            for alias in info["aliases"]:
+                with self.subTest(alias=alias):
+                    self.assertEqual(gpt_image_2.normalise_model(alias), canonical)
+
+    def test_empty_model_falls_back_to_the_default(self):
+        self.assertEqual(gpt_image_2.normalise_model(None), gpt_image_2.DEFAULT_MODEL)
+
+    def test_unknown_model_exits_nonzero(self):
+        with self.assertRaises(SystemExit):
+            gpt_image_2.normalise_model("gpt-image-9000")
+
+    def test_every_model_has_token_prices(self):
+        for name in gpt_image_2.MODELS:
+            with self.subTest(model=name):
+                self.assertIn(name, gpt_image_2.TOKEN_PRICES)
+
+    def test_only_gpt_image_2_supports_the_batch_discount(self):
+        # The 50% batch rate is published for gpt-image-2 and not for the 2.5
+        # models; claiming otherwise would under-quote a batch run.
+        self.assertTrue(gpt_image_2.MODELS["gpt-image-2"]["batch_discount"])
+        self.assertFalse(gpt_image_2.MODELS["gpt-image-2.5-flare"]["batch_discount"])
+
+    def test_xhigh_and_max_are_25_only(self):
+        self.assertNotIn("xhigh", gpt_image_2.MODELS["gpt-image-2"]["qualities"])
+        self.assertIn("xhigh", gpt_image_2.MODELS["gpt-image-2.5-flare"]["qualities"])
+
+
 class TestCostModel(unittest.TestCase):
-    def test_known_combinations(self):
-        self.assertAlmostEqual(gpt_image_2.estimate_cost("low", "off", 1), 0.006)
-        self.assertAlmostEqual(gpt_image_2.estimate_cost("high", "high", 1), 0.42)
-        self.assertAlmostEqual(gpt_image_2.estimate_cost("medium", "medium", 1), 0.09)
+    def setUp(self):
+        # measured_cost reads history, so point it at an empty file.
+        self.tmp = tempfile.TemporaryDirectory()
+        self._saved = gpt_image_2.HISTORY_FILE
+        gpt_image_2.HISTORY_FILE = Path(self.tmp.name) / "history.jsonl"
+
+    def tearDown(self):
+        gpt_image_2.HISTORY_FILE = self._saved
+        self.tmp.cleanup()
+
+    def test_published_figures_are_used_when_they_exist(self):
+        cost, basis = gpt_image_2.cost_per_unit("gpt-image-2", "low", "1024x1024")
+        self.assertAlmostEqual(cost, 0.006)
+        self.assertEqual(basis, "published")
+
+    def test_non_square_is_cheaper_than_square_at_the_same_quality(self):
+        square, _ = gpt_image_2.cost_per_unit("gpt-image-2", "high", "1024x1024")
+        portrait, _ = gpt_image_2.cost_per_unit("gpt-image-2", "high", "1024x1536")
+        self.assertLess(portrait, square)
+
+    def test_unknown_combination_falls_back_to_an_upper_bound(self):
+        cost, basis = gpt_image_2.cost_per_unit("gpt-image-2.5-flare", "high", "1088x1088")
+        self.assertEqual(basis, "upper bound")
+        self.assertAlmostEqual(cost, gpt_image_2.FALLBACK_COST["high"])
+
+    def test_unknown_quality_does_not_under_quote(self):
+        cost, _ = gpt_image_2.cost_per_unit("gpt-image-2", "ludicrous", "1024x1024")
+        self.assertGreaterEqual(cost, gpt_image_2.FALLBACK_COST["high"])
 
     def test_scales_linearly_with_n(self):
-        single = gpt_image_2.estimate_cost("medium", "low", 1)
-        self.assertAlmostEqual(gpt_image_2.estimate_cost("medium", "low", 4), single * 4)
+        single = gpt_image_2.estimate_cost("gpt-image-2", "medium", "1024x1024", 1)
+        self.assertAlmostEqual(gpt_image_2.estimate_cost("gpt-image-2", "medium", "1024x1024", 4), single * 4)
 
     def test_zero_images_costs_nothing(self):
-        self.assertEqual(gpt_image_2.estimate_cost("high", "high", 0), 0.0)
+        self.assertEqual(gpt_image_2.estimate_cost("gpt-image-2", "high", "1024x1024", 0), 0.0)
 
-    def test_unknown_quality_falls_back_to_high(self):
-        # Deliberate: an unrecognised quality must not under-quote the user.
-        self.assertEqual(
-            gpt_image_2.estimate_cost("ludicrous", "off", 1),
-            gpt_image_2.estimate_cost("high", "off", 1),
+    def test_measured_cost_needs_three_samples(self):
+        entry = {
+            "timestamp": "2026-09-12T10:00:00",
+            "model": "gpt-image-2.5-flare",
+            "quality": "medium",
+            "size": "1024x1024",
+            "n": 1,
+            "actual_cost": 0.02,
+        }
+        gpt_image_2.HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with gpt_image_2.HISTORY_FILE.open("w") as f:
+            for _ in range(2):
+                f.write(json.dumps(entry) + "\n")
+        self.assertIsNone(gpt_image_2.measured_cost("gpt-image-2.5-flare", "medium", "1024x1024"))
+        with gpt_image_2.HISTORY_FILE.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+        self.assertAlmostEqual(gpt_image_2.measured_cost("gpt-image-2.5-flare", "medium", "1024x1024"), 0.02)
+
+    def test_measured_cost_beats_the_published_table(self):
+        entry = {
+            "timestamp": "2026-09-12T10:00:00",
+            "model": "gpt-image-2",
+            "quality": "low",
+            "size": "1024x1024",
+            "n": 1,
+            "actual_cost": 0.009,
+        }
+        gpt_image_2.HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with gpt_image_2.HISTORY_FILE.open("w") as f:
+            for _ in range(3):
+                f.write(json.dumps(entry) + "\n")
+        cost, basis = gpt_image_2.cost_per_unit("gpt-image-2", "low", "1024x1024")
+        self.assertEqual(basis, "measured")
+        self.assertAlmostEqual(cost, 0.009)
+
+    def test_measured_cost_is_per_image_not_per_call(self):
+        entry = {
+            "timestamp": "2026-09-12T10:00:00",
+            "model": "gpt-image-2",
+            "quality": "low",
+            "size": "1024x1024",
+            "n": 4,
+            "actual_cost": 0.04,
+        }
+        gpt_image_2.HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with gpt_image_2.HISTORY_FILE.open("w") as f:
+            for _ in range(3):
+                f.write(json.dumps(entry) + "\n")
+        self.assertAlmostEqual(gpt_image_2.measured_cost("gpt-image-2", "low", "1024x1024"), 0.01)
+
+
+class TestCostFromUsage(unittest.TestCase):
+    """The only figure that is not a guess."""
+
+    USAGE = {
+        "total_tokens": 4310,
+        "input_tokens": 150,
+        "output_tokens": 4160,
+        "input_tokens_details": {"text_tokens": 50, "image_tokens": 100},
+    }
+
+    def test_prices_each_token_class_at_its_own_rate(self):
+        # 50 text @ $5/M + 100 image-in @ $8/M + 4160 image-out @ $30/M
+        expected = (50 * 5 + 100 * 8 + 4160 * 30) / 1_000_000
+        self.assertAlmostEqual(gpt_image_2.cost_from_usage("gpt-image-2", self.USAGE), expected)
+
+    def test_missing_breakdown_prices_input_at_the_dearer_rate(self):
+        usage = {"input_tokens": 150, "output_tokens": 4160}
+        expected = (150 * 8 + 4160 * 30) / 1_000_000
+        self.assertAlmostEqual(gpt_image_2.cost_from_usage("gpt-image-2", usage), expected)
+
+    def test_empty_usage_returns_none_rather_than_zero(self):
+        # Zero would silently report a free image and poison measured_cost.
+        self.assertIsNone(gpt_image_2.cost_from_usage("gpt-image-2", {}))
+
+    def test_unknown_model_returns_none(self):
+        self.assertIsNone(gpt_image_2.cost_from_usage("gpt-image-9000", self.USAGE))
+
+    def test_batch_halves_the_cost_only_for_eligible_models(self):
+        full = gpt_image_2.cost_from_usage("gpt-image-2", self.USAGE)
+        batched = gpt_image_2.cost_from_usage("gpt-image-2", self.USAGE, batch=True)
+        self.assertAlmostEqual(batched, full * 0.5)
+        flare = gpt_image_2.cost_from_usage("gpt-image-2.5-flare", self.USAGE)
+        self.assertAlmostEqual(gpt_image_2.cost_from_usage("gpt-image-2.5-flare", self.USAGE, batch=True), flare)
+
+
+class TestSizing(unittest.TestCase):
+    def test_parse_size_reads_width_by_height(self):
+        self.assertEqual(gpt_image_2.parse_size("1536x864"), (1536, 864))
+
+    def test_auto_and_none_parse_as_unset(self):
+        self.assertEqual(gpt_image_2.parse_size("auto"), (None, None))
+        self.assertEqual(gpt_image_2.parse_size(None), (None, None))
+
+    def test_unparseable_size_exits_nonzero(self):
+        with self.assertRaises(SystemExit):
+            gpt_image_2.parse_size("big")
+
+    def test_a_legal_size_has_no_problem(self):
+        self.assertIsNone(gpt_image_2.size_problem(1024, 1024))
+        self.assertIsNone(gpt_image_2.size_problem(1536, 864))
+
+    def test_edges_must_be_multiples_of_sixteen(self):
+        self.assertIn("multiples of 16", gpt_image_2.size_problem(1080, 1080) or "")
+
+    def test_oversize_edge_is_rejected(self):
+        self.assertIn("longest edge", gpt_image_2.size_problem(3856, 1024) or "")
+
+    def test_extreme_aspect_is_rejected(self):
+        self.assertIn("aspect ratio", gpt_image_2.size_problem(3200, 800) or "")
+
+    def test_too_few_pixels_is_rejected(self):
+        self.assertIn("at least", gpt_image_2.size_problem(512, 512) or "")
+
+    def test_snap_size_always_returns_something_legal(self):
+        for width, height in (
+            (1080, 1080),
+            (1920, 1080),
+            (1280, 720),
+            (1200, 630),
+            (1600, 900),
+            (1080, 1920),
+            (1000, 1500),
+            (100, 100),
+            (6000, 4000),
+        ):
+            with self.subTest(size=(width, height)):
+                w, h = gpt_image_2.snap_size(width, height)
+                self.assertIsNone(gpt_image_2.size_problem(w, h), f"{width}x{height} -> {w}x{h}")
+
+    def test_snap_size_rounds_up_so_the_fit_is_a_downscale(self):
+        w, h = gpt_image_2.snap_size(1920, 1080)
+        self.assertGreaterEqual(w, 1920)
+        self.assertGreaterEqual(h, 1080)
+
+    def test_snap_size_keeps_a_legal_size_untouched(self):
+        self.assertEqual(gpt_image_2.snap_size(1280, 720), (1280, 720))
+
+    def test_platform_drives_the_generation_size_when_size_is_absent(self):
+        result = gpt_image_2.size_for(None, {"width": 1920, "height": 1080})
+        self.assertEqual(result, "1920x1088")
+
+    def test_explicit_size_wins_over_platform(self):
+        result = gpt_image_2.size_for("1024x1024", {"width": 1920, "height": 1080})
+        self.assertEqual(result, "1024x1024")
+
+    def test_illegal_explicit_size_exits_nonzero(self):
+        with self.assertRaises(SystemExit):
+            gpt_image_2.size_for("1080x1080", None)
+
+
+class TestApiErrors(unittest.TestCase):
+    """Retrying a refusal just reaches the same refusal, four times slower."""
+
+    def test_moderation_block_is_not_retryable(self):
+        body = json.dumps(
+            {
+                "error": {
+                    "type": "image_generation_user_error",
+                    "code": "moderation_blocked",
+                    "moderation_details": {"moderation_stage": "input", "categories": ["violence"]},
+                }
+            }
         )
+        message, retryable = gpt_image_2.describe_api_error(body)
+        self.assertFalse(retryable)
+        self.assertIn("input", message)
+        self.assertIn("violence", message)
 
-    def test_unknown_thinking_falls_back_to_most_expensive(self):
-        self.assertAlmostEqual(gpt_image_2.cost_per_unit("high", "nonsense"), 0.21)
+    def test_user_error_is_not_retryable(self):
+        body = json.dumps({"error": {"type": "image_generation_user_error", "code": "bad_prompt", "message": "no"}})
+        _, retryable = gpt_image_2.describe_api_error(body)
+        self.assertFalse(retryable)
 
-    def test_cost_per_unit_matches_estimate_for_one(self):
-        for quality in ("low", "medium", "high"):
-            for thinking in gpt_image_2.THINKING_LEVELS:
-                with self.subTest(quality=quality, thinking=thinking):
-                    self.assertAlmostEqual(
-                        gpt_image_2.cost_per_unit(quality, thinking),
-                        gpt_image_2.estimate_cost(quality, thinking, 1),
-                    )
+    def test_server_error_stays_retryable(self):
+        body = json.dumps({"error": {"type": "server_error", "message": "try later"}})
+        _, retryable = gpt_image_2.describe_api_error(body)
+        self.assertTrue(retryable)
+
+    def test_unparseable_body_stays_retryable(self):
+        message, retryable = gpt_image_2.describe_api_error("<html>502</html>")
+        self.assertTrue(retryable)
+        self.assertIn("502", message)
 
 
 class TestPresetsFile(unittest.TestCase):
@@ -102,11 +331,12 @@ class TestPresetsFile(unittest.TestCase):
                     f"preset '{name}' drops the user's subject entirely",
                 )
 
-    def test_thinking_levels_are_valid_when_present(self):
+    def test_no_preset_still_declares_a_thinking_level(self):
+        # The API has no thinking parameter. A preset that names one is
+        # describing a request that cannot be sent.
         for name, preset in self.presets.items():
-            if "thinking" in preset:
-                with self.subTest(preset=name):
-                    self.assertIn(preset["thinking"], gpt_image_2.THINKING_LEVELS)
+            with self.subTest(preset=name):
+                self.assertNotIn("thinking", preset)
 
 
 class TestPlatformsFile(unittest.TestCase):
@@ -126,27 +356,22 @@ class TestPlatformsFile(unittest.TestCase):
                     self.assertIsInstance(value, int, f"{name}.{axis} is not an int")
                     self.assertGreater(value, 0, f"{name}.{axis} is not positive")
 
+    def test_every_platform_snaps_to_a_generatable_size(self):
+        for name, platform in self.platforms.items():
+            with self.subTest(platform=name):
+                w, h = gpt_image_2.snap_size(platform["width"], platform["height"])
+                self.assertIsNone(gpt_image_2.size_problem(w, h))
+
 
 class TestComposePrompt(unittest.TestCase):
     def test_no_preset_returns_prompt_unchanged(self):
-        prompt, thinking = gpt_image_2.compose_prompt("a red bicycle", None)
-        self.assertEqual(prompt, "a red bicycle")
-        self.assertIsNone(thinking)
+        self.assertEqual(gpt_image_2.compose_prompt("a red bicycle", None), "a red bicycle")
 
     def test_preset_substitutes_the_subject(self):
         name = next(iter(gpt_image_2.load_presets()))
-        prompt, _ = gpt_image_2.compose_prompt("a red bicycle", name)
+        prompt = gpt_image_2.compose_prompt("a red bicycle", name)
         self.assertIn("a red bicycle", prompt)
         self.assertNotIn("{subject}", prompt)
-
-    def test_preset_returns_its_thinking_level(self):
-        presets = gpt_image_2.load_presets()
-        with_thinking = [n for n, p in presets.items() if p.get("thinking")]
-        if not with_thinking:
-            self.skipTest("no preset declares a thinking level")
-        name = with_thinking[0]
-        _, thinking = gpt_image_2.compose_prompt("subject", name)
-        self.assertEqual(thinking, presets[name]["thinking"])
 
     def test_unknown_preset_exits_nonzero(self):
         with self.assertRaises(SystemExit) as ctx:
@@ -229,21 +454,28 @@ class TestHistory(unittest.TestCase):
         ) = self._saved
         self.tmp.cleanup()
 
-    def _entry(self, prompt="a subject", project=None):
-        return gpt_image_2.HistoryEntry(
-            timestamp="2026-07-28T12:00:00",
-            prompt=prompt,
-            preset=None,
-            platform=None,
-            thinking="off",
-            quality="high",
-            provider="openai",
-            n=1,
-            seed=None,
-            output="out.png",
-            project=project,
-            estimated_cost=0.21,
-        )
+    def _entry(self, prompt="a subject", project=None, output="out.png", output_dir=".", **kw):
+        fields = {
+            "timestamp": "2026-07-28T12:00:00",
+            "prompt": prompt,
+            "preset": None,
+            "platform": None,
+            "model": "gpt-image-2.5-flare",
+            "quality": "high",
+            "size": "1024x1024",
+            "background": None,
+            "output_format": "png",
+            "provider": "openai",
+            "n": 1,
+            "output": output,
+            "output_dir": output_dir,
+            "project": project,
+            "estimated_cost": 0.21,
+            "actual_cost": None,
+            "usage": None,
+        }
+        fields.update(kw)
+        return gpt_image_2.HistoryEntry(**fields)
 
     def test_missing_history_reads_as_empty(self):
         self.assertEqual(gpt_image_2.load_history(), [])
@@ -285,6 +517,107 @@ class TestHistory(unittest.TestCase):
             if line.strip():
                 json.loads(line)
 
+    def test_actual_cost_is_preferred_over_the_estimate(self):
+        self.assertAlmostEqual(gpt_image_2.entry_cost({"estimated_cost": 0.21, "actual_cost": 0.03}), 0.03)
+        self.assertAlmostEqual(gpt_image_2.entry_cost({"estimated_cost": 0.21}), 0.21)
+        self.assertEqual(gpt_image_2.entry_cost({}), 0.0)
+
+
+class TestSetProfile(unittest.TestCase):
+    """Step 0: what did this directory's set use last time?"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self._saved = (gpt_image_2.CONFIG_DIR, gpt_image_2.HISTORY_FILE, gpt_image_2.LAST_RUN_FILE)
+        gpt_image_2.CONFIG_DIR = self.root
+        gpt_image_2.HISTORY_FILE = self.root / "history.jsonl"
+        gpt_image_2.LAST_RUN_FILE = self.root / "last.json"
+        self.images = self.root / "set"
+        self.images.mkdir()
+
+    def tearDown(self):
+        (gpt_image_2.CONFIG_DIR, gpt_image_2.HISTORY_FILE, gpt_image_2.LAST_RUN_FILE) = self._saved
+        self.tmp.cleanup()
+
+    def _write(self, **kw):
+        row = {
+            "timestamp": "2026-09-12T10:00:00",
+            "model": "gpt-image-2",
+            "quality": "low",
+            "n": 1,
+            "output": str(self.images / "a.png"),
+            "output_dir": str(self.images),
+        }
+        row.update(kw)
+        with gpt_image_2.HISTORY_FILE.open("a") as f:
+            f.write(json.dumps(row) + "\n")
+
+    def test_empty_history_reports_a_new_set(self):
+        profile = gpt_image_2.set_profile(self.images / "new.png")
+        self.assertEqual(profile["count"], 0)
+        self.assertIsNone(profile["quality"])
+
+    def test_reports_the_dominant_quality_and_model(self):
+        self._write(quality="low")
+        self._write(quality="low")
+        self._write(quality="high")
+        profile = gpt_image_2.set_profile(self.images / "new.png")
+        self.assertEqual(profile["quality"], "low")
+        self.assertEqual(profile["model"], "gpt-image-2")
+        self.assertEqual(profile["count"], 3)
+
+    def test_multi_image_runs_are_counted(self):
+        # The bug this replaces: a --n 4 run stored the DIRECTORY in `output`,
+        # and the old lookup then took its parent and compared the grandparent
+        # against the target, so the whole run was invisible to set-check.
+        self._write(n=4, output=str(self.images), output_dir=None)
+        profile = gpt_image_2.set_profile(self.images / "new.png")
+        self.assertEqual(profile["count"], 4)
+        self.assertEqual(profile["quality"], "low")
+
+    def test_rows_from_another_directory_are_ignored(self):
+        other = self.root / "elsewhere"
+        other.mkdir()
+        self._write(output=str(other / "b.png"), output_dir=str(other), quality="high")
+        self._write(quality="low")
+        profile = gpt_image_2.set_profile(self.images / "new.png")
+        self.assertEqual(profile["count"], 1)
+        self.assertEqual(profile["quality"], "low")
+
+    def test_rows_without_a_model_are_read_as_gpt_image_2(self):
+        self._write(model=None)
+        self.assertEqual(gpt_image_2.set_profile(self.images / "new.png")["model"], "gpt-image-2")
+
+    def test_a_bare_dot_matches_nothing(self):
+        # A row written with a relative output path recorded output_dir=".". It
+        # names no directory in particular, so matching it against whatever the
+        # CLI is run from next would hand back an unrelated folder's tier.
+        self._write(output="a.png", output_dir=".", quality="high")
+        self.assertEqual(gpt_image_2.set_profile(self.images / "new.png")["count"], 0)
+
+
+class TestDirMatches(unittest.TestCase):
+    def test_absolute_paths_match_exactly(self):
+        self.assertTrue(gpt_image_2.dir_matches("/a/b/c", "/a/b/c"))
+        self.assertFalse(gpt_image_2.dir_matches("/a/b", "/a/b/c"))
+
+    def test_relative_legacy_paths_match_on_a_component_suffix(self):
+        self.assertTrue(gpt_image_2.dir_matches("brand/graphics/aurora", "/home/d/repo/brand/graphics/aurora"))
+        self.assertTrue(gpt_image_2.dir_matches("aurora", "/home/d/repo/brand/graphics/aurora"))
+
+    def test_a_partial_component_does_not_match(self):
+        # "rora" is not the directory "aurora", and a plain string endswith
+        # would have said it was.
+        self.assertFalse(gpt_image_2.dir_matches("rora", "/home/d/repo/brand/aurora"))
+
+    def test_a_bare_dot_matches_nothing(self):
+        self.assertFalse(gpt_image_2.dir_matches(".", "/home/d/repo"))
+        self.assertFalse(gpt_image_2.dir_matches("", "/home/d/repo"))
+
+    def test_a_relative_path_longer_than_the_target_does_not_match(self):
+        self.assertFalse(gpt_image_2.dir_matches("a/b/c/d/e", "/x/y"))
+
 
 class TestCli(unittest.TestCase):
     """Subprocess-level checks. --dry-run returns before any request is built."""
@@ -297,6 +630,11 @@ class TestCli(unittest.TestCase):
         result = run_cli()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage", result.stdout.lower())
+
+    def test_list_models_names_the_default(self):
+        result = run_cli("list-models")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(gpt_image_2.DEFAULT_MODEL, result.stdout)
 
     def test_list_presets_lists_a_real_preset(self):
         result = run_cli("list-presets")
@@ -316,6 +654,15 @@ class TestCli(unittest.TestCase):
         self.assertIn("a red bicycle", result.stdout)
         self.assertIn("Est. cost:", result.stdout)
 
+    def test_dry_run_defaults_to_flare(self):
+        result = run_cli("--dry-run", "a red bicycle")
+        self.assertIn(gpt_image_2.DEFAULT_MODEL, result.stdout)
+
+    def test_model_alias_is_accepted(self):
+        result = run_cli("--dry-run", "--model", "sunburst", "a red bicycle")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("gpt-image-2.5-sunburst", result.stdout)
+
     def test_dry_run_applies_the_preset(self):
         name = next(iter(gpt_image_2.load_presets()))
         result = run_cli("--dry-run", "--preset", name, "a red bicycle")
@@ -334,6 +681,14 @@ class TestCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Estimated cost", result.stdout)
 
+    def test_estimate_offers_the_batch_price_for_gpt_image_2(self):
+        result = run_cli("--estimate", "--model", "gpt-image-2", "--n", "4", "a subject")
+        self.assertIn("Batch API", result.stdout)
+
+    def test_estimate_does_not_offer_batch_for_the_25_models(self):
+        result = run_cli("--estimate", "--n", "4", "a subject")
+        self.assertNotIn("Batch API", result.stdout)
+
     def test_missing_api_key_exits_nonzero(self):
         result = run_cli("--dry-run", "a subject", env_extra={"OPENAI_API_KEY": ""})
         self.assertNotEqual(result.returncode, 0)
@@ -344,6 +699,16 @@ class TestCli(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unknown preset", result.stderr)
 
+    def test_unknown_model_exits_nonzero(self):
+        result = run_cli("--dry-run", "--model", "gpt-image-9000", "a subject")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown model", result.stderr)
+
+    def test_xhigh_is_rejected_on_gpt_image_2(self):
+        result = run_cli("--dry-run", "--model", "gpt-image-2", "--quality", "xhigh", "a subject")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not support", result.stderr)
+
     def test_n_above_ten_is_rejected(self):
         result = run_cli("--dry-run", "--n", "11", "a subject")
         self.assertNotEqual(result.returncode, 0)
@@ -353,13 +718,36 @@ class TestCli(unittest.TestCase):
         result = run_cli("--dry-run", "--n", "0", "a subject")
         self.assertNotEqual(result.returncode, 0)
 
-    def test_invalid_thinking_level_is_rejected(self):
-        result = run_cli("--dry-run", "--thinking", "extreme", "a subject")
-        self.assertNotEqual(result.returncode, 0)
-
     def test_invalid_provider_is_rejected(self):
         result = run_cli("--dry-run", "--provider", "nobody", "a subject")
         self.assertNotEqual(result.returncode, 0)
+
+    def test_illegal_size_is_rejected_before_the_api_call(self):
+        result = run_cli("--dry-run", "--size", "1080x1080", "a subject")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("1088x1088", result.stderr)
+
+    def test_compression_on_png_is_rejected(self):
+        result = run_cli("--dry-run", "--output-compression", "50", "a subject")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("jpeg and webp only", result.stderr)
+
+    def test_mask_without_edit_is_rejected(self):
+        result = run_cli("--dry-run", "--mask", "m.png", "a subject")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--mask needs --edit", result.stderr)
+
+    def test_seed_fails_loudly_rather_than_being_ignored(self):
+        # The whole point: a script still passing --seed believes composition
+        # is locked between draft and final. It never was.
+        result = run_cli("--dry-run", "--seed", "42", "a subject")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no seed parameter", result.stderr)
+
+    def test_thinking_fails_loudly(self):
+        result = run_cli("--dry-run", "--thinking", "medium", "a subject")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no thinking parameter", result.stderr)
 
 
 if __name__ == "__main__":

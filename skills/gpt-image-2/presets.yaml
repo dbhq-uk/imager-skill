@@ -46,59 +46,48 @@ grain:
 infographic:
   description: "Data-rich visual explainer with labels, clean typography, structured layout"
   prompt: "clean infographic about {subject}, structured layout with clear sections, readable sans-serif labels and headings, data visualization elements, white or light background, professional color palette, clear visual hierarchy, information design"
-  thinking: medium
 
 slide:
   description: "Presentation slide - title + subtitle, minimal background, ready for keynote"
   prompt: "presentation slide about {subject}, large bold title text, smaller subtitle, clean minimal background with subtle gradient, professional typography, wide 16:9 composition, ample whitespace, corporate-ready design"
-  thinking: low
 
 diagram:
   description: "Labeled technical diagram - boxes, arrows, clean lines, readable annotations"
   prompt: "technical diagram of {subject}, labeled boxes connected by arrows, clean lines, readable sans-serif annotations, structured flowchart or architecture layout, white background, professional, engineering documentation style"
-  thinking: medium
 
 poster:
   description: "Event poster - bold headline + details, striking typography"
   prompt: "event poster for {subject}, bold large headline typography, event details in smaller text below, striking visual design, strong color contrast, professional print-ready layout, eye-catching composition"
-  thinking: low
 
 menu:
   description: "Print-ready menu/card - elegant type pairing, structured items"
   prompt: "elegant menu or card layout for {subject}, refined serif and sans-serif type pairing, structured list of items with descriptions, cream or white background, subtle decorative elements, print-ready, restaurant or event quality"
-  thinking: low
 
 manga:
   description: "Comic panel layout - speech bubbles, SFX text, dynamic composition"
   prompt: "{subject}, manga comic panel layout, black and white with screentone shading, speech bubbles with readable text, dynamic action lines, Japanese manga aesthetic, expressive characters, sound effect text"
-  thinking: medium
 
 # --- Community Favorites (popular GPT Image 2 templates) ---
 
 trading-card:
   description: "Retro holographic trading card with stats, borders, and character portrait"
   prompt: "{subject}, retro holographic trading card design, ornate gold border with embossed patterns, character portrait in center, stat icons at bottom, holographic rainbow shimmer effect, dark background, collectible card game aesthetic"
-  thinking: medium
 
 pixar:
   description: "Pixar/Disney 3D character with subsurface scattering and big eyes"
   prompt: "{subject}, Pixar 3D animated character style, subsurface scattering skin, big expressive eyes, soft studio lighting, 3/4 view, clean colorful background, friendly appealing design, high detail render"
-  thinking: low
 
 app-mockup:
   description: "Mobile app UI mockup in iPhone frame with status bar"
   prompt: "iPhone mockup showing a mobile app screen for {subject}, modern UI design, clean interface with navigation bar, status bar at top showing time and battery, rounded corners, shadow beneath phone, white or gradient background, professional product shot"
-  thinking: medium
 
 isometric:
   description: "Isometric 3D miniature diorama with PBR materials"
   prompt: "{subject}, isometric 3D miniature diorama, 45 degree top-down view, PBR materials, tiny detailed scene, soft shadows, clean white background, game asset style, vibrant colors, tilt-shift effect"
-  thinking: low
 
 action-figure:
   description: "Action figure in sealed blister packaging with branding"
   prompt: "{subject}, action figure toy in sealed clear blister packaging, product photography, cardboard backing with logo and branding, plastic bubble, retail shelf display, studio lighting, white background"
-  thinking: medium
 
 cinematic:
   description: "Anamorphic widescreen film still with lens flares"
@@ -107,7 +96,6 @@ cinematic:
 panorama:
   description: "360° equirectangular panorama for VR/immersive view"
   prompt: "{subject}, 360 degree equirectangular panoramic view, seamless edges, immersive environment, photorealistic, HDR lighting, complete surrounding scene, VR ready"
-  thinking: medium
 
 nordic:
   description: "Calm Scandinavian - muted tones, fog, clean geometry, quiet atmosphere"

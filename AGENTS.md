@@ -4,7 +4,9 @@ Guidance for AI agents (and people) working in this repository.
 
 ## What this is
 
-The **gpt-image-2** skill for AI coding agents - generate and edit images with OpenAI's GPT Image 2, through a guided draft-then-final flow. It follows the [Agent Skills](https://agentskills.io) layout (`skills/<name>/SKILL.md`) and ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins).
+The **gpt-image-2** skill for AI coding agents - generate and edit images with OpenAI's GPT Image models (`gpt-image-2.5-flare` by default, plus `gpt-image-2.5-sunburst` and `gpt-image-2`), through a guided draft-then-final flow. It follows the [Agent Skills](https://agentskills.io) layout (`skills/<name>/SKILL.md`) and ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins).
+
+The directory and the CLI file are still named `gpt-image-2` because renaming them would break every existing install path; the skill is not tied to that model.
 
 ## Layout
 
@@ -13,7 +15,7 @@ The **gpt-image-2** skill for AI coding agents - generate and edit images with O
 skills/gpt-image-2/SKILL.md                   # the skill (agent-facing instructions)
 skills/gpt-image-2/scripts/gpt_image_2.py     # the CLI, and all of the logic
 skills/gpt-image-2/scripts/setup.sh           # venv + PyYAML
-skills/gpt-image-2/presets.yaml               # 21 style presets
+skills/gpt-image-2/presets.yaml               # 27 style presets
 skills/gpt-image-2/platforms.yaml             # 8 platform sizes
 skills/gpt-image-2/references/api_reference.md
 skills/gpt-image-2/tests/                     # pytest suite, no network
@@ -22,15 +24,21 @@ install.sh / install-codex.sh                 # local symlink installers (Claude
 
 The venv lives at `skills/gpt-image-2/.venv`, built by `scripts/setup.sh` and gitignored. It is inside the skill directory on purpose: `${CLAUDE_SKILL_DIR}/.venv/bin/python` is then correct under a personal install, a Codex install and a plugin install without a lookup table.
 
-## The three constraints that must not be broken
+## The four constraints that must not be broken
 
 Everything else here is a preference. These are not.
 
 **1. Nothing spends money without pricing it first.** `estimate_cost` runs before the request, and at or above `CONFIRM_THRESHOLD` ($0.50) the run stops and asks. `-y` is the only way to skip that, and it has to stay an explicit opt-in rather than a default, a config setting, or something the interactive flow quietly passes on the user's behalf. A tool that spends someone's money and surprises them about the amount has done real damage, and it only has to happen once.
 
-**2. The draft loop stays the default.** Generate low quality, show it, ask, then upgrade with the same `--seed`. It is not a nicety - it is a 97% saving on the iteration that finding a direction actually takes, and it is the only reason this is cheap enough to play with. If you are editing `SKILL.md` and about to let it jump to a final because the prompt looked confident, do not.
+An estimate is allowed to be too high and never too low. `cost_per_unit` prefers a figure measured from real runs, falls back to OpenAI's published table, and falls back again to a deliberately pessimistic ceiling - in that order, and it reports which one it used. If you add a model or a quality tier, give it a `FALLBACK_COST` entry at or above what it can really cost. An under-quote is what lets a batch through the gate.
+
+**2. The draft loop stays the default.** Generate low quality, show it, ask, then upgrade. It is not a nicety - it is a 97% saving on the iteration that finding a direction actually takes, and it is the only reason this is cheap enough to play with. If you are editing `SKILL.md` and about to let it jump to a final because the prompt looked confident, do not. Note that `config.yaml` must not carry a `quality` key by default: `cmd_init` used to write `quality: high` into it, which silently overrode the low default on every later call.
 
 **3. The API key is read, never written.** It comes from `OPENAI_API_KEY` (or `OPENROUTER_API_KEY`) in the environment on every run. `~/.dbhq/gpt-image-2/` holds config, a history log and a last-run record, and none of the three has a field for a key. Do not add one "for convenience", do not log the request headers, and do not write the key into the history entry so that `again` can replay it.
+
+**4. Never accept a parameter the API does not have.** `--seed` and `--thinking` lived here for months: documented in `SKILL.md`, printed in the run line, written to `history.jsonl`, and never put in a request body. `--thinking` also multiplied the cost estimate, so the confirmation gate fired on numbers describing a request that had never been sent. Both are absent from `CreateImageRequest` and `CreateImageEditRequest` in `openai/openai-openapi`, and from the image generation guide.
+
+They are now in `RETIRED_FLAGS` and exit non-zero with an explanation, because the failure was not the missing feature - it was that the skill told users composition was locked between draft and final when nothing was locking it. If you add a flag, it must reach the wire, and if a flag stops reaching the wire it must start erroring.
 
 ## Conventions
 
