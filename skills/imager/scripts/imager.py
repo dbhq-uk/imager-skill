@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GPT Image - OpenAI Image Generation Tool
+"""imager - generate and edit images with OpenAI's GPT Image models
 
 A CLI wrapper around OpenAI's GPT Image models: gpt-image-2.5-flare (default),
 gpt-image-2.5-sunburst and gpt-image-2.
@@ -9,14 +9,14 @@ inpainting, transparent backgrounds, output formats, cost controls that price
 from the API's own token usage, and OpenRouter routing.
 
 Usage:
-    gpt_image_2.py [flags] "prompt" [output.png]
-    gpt_image_2.py init                    # onboarding wizard
-    gpt_image_2.py again                   # regenerate last
-    gpt_image_2.py history [-n 10]         # show history
-    gpt_image_2.py set-check <dir>         # what did this set use?
-    gpt_image_2.py list-models
-    gpt_image_2.py list-presets
-    gpt_image_2.py list-platforms
+    imager.py [flags] "prompt" [output.png]
+    imager.py init                    # onboarding wizard
+    imager.py again                   # regenerate last
+    imager.py history [-n 10]         # show history
+    imager.py set-check <dir>         # what did this set use?
+    imager.py list-models
+    imager.py list-presets
+    imager.py list-platforms
 """
 
 from __future__ import annotations
@@ -50,15 +50,30 @@ PLATFORMS_FILE = SKILL_DIR / "platforms.yaml"
 
 
 def _migrate_legacy_settings() -> None:
-    """One-time migration: settings used to live at ~/.config/gpt-image-2."""
-    new_dir = Path.home() / ".dbhq" / "gpt-image-2"
-    old_dir = Path.home() / ".config" / "gpt-image-2"
-    if new_dir.exists() or not old_dir.is_dir():
+    """One-time migrations of the settings directory, oldest source last.
+
+    Two moves have happened. The skill was renamed from gpt-image-2 to imager on
+    13 Sep 2026, and before that its settings moved out of ~/.config. Both are
+    done here, on first run, guarded on the destination not existing - so an
+    existing install keeps working without its owner touching anything, and a
+    machine that has already migrated does nothing.
+
+    Order matters: the ~/.dbhq/gpt-image-2 source is checked first, because a
+    machine that migrated out of ~/.config already has settings there and that
+    is the directory carrying the real history.
+    """
+    new_dir = Path.home() / ".dbhq" / "imager"
+    if new_dir.exists():
         return
-    new_dir.parent.mkdir(mode=0o700, exist_ok=True)
-    os.chmod(new_dir.parent, 0o700)
-    old_dir.rename(new_dir)
-    os.chmod(new_dir, 0o700)
+    for old_dir in (Path.home() / ".dbhq" / "gpt-image-2",
+                    Path.home() / ".config" / "gpt-image-2"):
+        if not old_dir.is_dir():
+            continue
+        new_dir.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(new_dir.parent, 0o700)
+        old_dir.rename(new_dir)
+        os.chmod(new_dir, 0o700)
+        return
 
 
 # GPT_IMAGE_HOME relocates config, history and the last-run record. It exists so
@@ -69,7 +84,7 @@ _ENV_HOME = os.environ.get("GPT_IMAGE_HOME")
 if not _ENV_HOME:
     _migrate_legacy_settings()
 
-CONFIG_DIR = Path(_ENV_HOME) if _ENV_HOME else Path.home() / ".dbhq" / "gpt-image-2"
+CONFIG_DIR = Path(_ENV_HOME) if _ENV_HOME else Path.home() / ".dbhq" / "imager"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 HISTORY_FILE = CONFIG_DIR / "history.jsonl"
 LAST_RUN_FILE = CONFIG_DIR / "last.json"
@@ -635,8 +650,8 @@ def api_request(
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             url = prov["url"]
         if provider == "openrouter":
-            headers["HTTP-Referer"] = "https://github.com/dbhq-uk/gpt-image-2-skill"
-            headers["X-Title"] = "gpt-image-2-skill"
+            headers["HTTP-Referer"] = "https://github.com/dbhq-uk/imager-skill"
+            headers["X-Title"] = "imager-skill"
         return urllib.request.Request(url, data=data, headers=headers, method="POST")
 
     max_retries = 4
@@ -893,7 +908,7 @@ def cmd_init():
     print("\n  Real cost is read back from the API's token usage after each call,")
     print("  so history.jsonl holds what was actually billed, not this table.")
 
-    print('\nReady. Try: scripts/gpt_image_2.py "a cat astronaut" ./cat.png')
+    print('\nReady. Try: scripts/imager.py "a cat astronaut" ./cat.png')
 
 
 # ---------- List commands ----------
@@ -944,7 +959,7 @@ def cmd_generate(args):
     if not api_key:
         print(f"Error: No API key found for {provider}.", file=sys.stderr)
         print(
-            f"Set {PROVIDERS[provider]['key_env']} or run: scripts/gpt_image_2.py init",
+            f"Set {PROVIDERS[provider]['key_env']} or run: scripts/imager.py init",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -998,7 +1013,10 @@ def cmd_generate(args):
     )
 
     if args.project:
-        base_dir = Path.home() / "gpt-image-2" / "outputs" / args.project
+        # ~/imager/outputs since the 13 Sep 2026 rename. Nothing moves existing
+        # output: these are the user's own images, not skill state, so a project
+        # generated before the rename keeps its files under ~/gpt-image-2.
+        base_dir = Path.home() / "imager" / "outputs" / args.project
         slug = re.sub(r"[^a-z0-9]+", "-", args.prompt.lower()[:40]).strip("-")
         output_path = base_dir / f"{datetime.now().strftime('%Y%m%d')}-{slug}.png"
 
@@ -1338,7 +1356,7 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     gen_parser = argparse.ArgumentParser(
-        prog="gpt_image_2.py",
+        prog="imager.py",
         description="GPT Image - Generate images from text prompts",
     )
     gen_parser.add_argument("prompt", nargs="?", help="Text prompt for image generation")

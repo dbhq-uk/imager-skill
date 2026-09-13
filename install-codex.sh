@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install the gpt-image-2 skill into ~/.codex/skills/ for Codex.
+# Install the imager skill into ~/.codex/skills/ for Codex.
 #
 # Codex does not substitute ${CLAUDE_SKILL_DIR}, so this script rewrites that
 # variable to each skill's installed Codex path and symlinks the supporting
@@ -10,7 +10,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_ROOT="$HOME/.codex/skills"
 
-echo "=== gpt-image-2 skill installer (Codex) ==="
+echo "=== imager skill installer (Codex) ==="
 echo
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -30,7 +30,7 @@ echo
 # <target>/.venv/bin/python, so the venv has to exist in the source tree before
 # the link is made - link first and you get a dangling symlink, which fails more
 # confusingly than a missing one because it looks installed.
-"$SCRIPT_DIR/skills/gpt-image-2/scripts/setup.sh"
+"$SCRIPT_DIR/skills/imager/scripts/setup.sh"
 echo
 
 mkdir -p "$SKILLS_ROOT"
@@ -54,7 +54,7 @@ for src in "$SCRIPT_DIR"/skills/*/; do
   # The two YAML files are not named by SKILL.md - the CLI finds them from its
   # own resolved location, which lands in the source tree either way. They are
   # linked anyway so the Codex install is a complete picture of the skill, and
-  # so that dropping the .resolve() in gpt_image_2.py cannot silently break it.
+  # so that dropping the .resolve() in imager.py cannot silently break it.
   for f in presets.yaml platforms.yaml; do
     [ -f "$src/$f" ] && ln -sfn "$src/$f" "$target/$f"
   done

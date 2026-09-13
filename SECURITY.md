@@ -31,7 +31,7 @@ the way you would treat any upload: OpenAI's data-usage terms apply, not ours.
 
 - The API key is read from `OPENAI_API_KEY` (or `OPENROUTER_API_KEY`) in the
   environment **on every run**
-- It is **never written to disk** by this skill. `~/.dbhq/gpt-image-2/`
+- It is **never written to disk** by this skill. `~/.dbhq/imager/`
   holds `config.yaml` (your defaults), `history.jsonl` (a generation log) and
   `last.json` (the last run, so `again` can repeat it), and none of the three
   has a field for a key
@@ -42,12 +42,12 @@ protecting it.
 
 ### On disk
 
-- Installs into `~/.claude/skills/gpt-image-2` or `~/.codex/skills/gpt-image-2`,
+- Installs into `~/.claude/skills/imager` or `~/.codex/skills/imager`,
   depending on the agent
-- Builds a virtualenv at `skills/gpt-image-2/.venv`
+- Builds a virtualenv at `skills/imager/.venv`
 - Writes generated images where you tell it to, and defaults to the working
   directory
-- Writes config, history and last-run state to `~/.dbhq/gpt-image-2/`
+- Writes config, history and last-run state to `~/.dbhq/imager/`
 
 ### Spend
 
@@ -66,7 +66,7 @@ less there is to audit before trusting it. Dependabot keeps the pin current.
 ## Standing position on scanner findings
 
 Automated skill scanners flag the sentences above that name environment
-variables and the `~/.dbhq/gpt-image-2/` directory as "sensitive file access".
+variables and the `~/.dbhq/imager/` directory as "sensitive file access".
 That is accurate documentation, not a defect.
 
 **We do not delete accurate documentation to clear a scanner finding.** A

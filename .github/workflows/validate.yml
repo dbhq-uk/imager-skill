@@ -39,7 +39,7 @@ jobs:
           python3 - <<'PY'
           import sys, yaml, pathlib
           for f in ("presets.yaml", "platforms.yaml"):
-              p = pathlib.Path("skills/gpt-image-2") / f
+              p = pathlib.Path("skills/imager") / f
               d = yaml.safe_load(p.read_text(encoding="utf-8"))
               if not isinstance(d, dict) or not d:
                   print(f"{p}: not a non-empty mapping"); sys.exit(1)
@@ -53,7 +53,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import sys, yaml, pathlib
-          presets = yaml.safe_load(pathlib.Path("skills/gpt-image-2/presets.yaml").read_text(encoding="utf-8"))
+          presets = yaml.safe_load(pathlib.Path("skills/imager/presets.yaml").read_text(encoding="utf-8"))
           bad = [k for k, v in presets.items()
                  if not isinstance(v, dict) or not v.get("description") or not v.get("prompt")]
           if bad:
@@ -186,13 +186,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        working-directory: skills/gpt-image-2
+        working-directory: skills/imager
         run: |
           python -m pip install --upgrade pip pytest
           python -m pip install -r requirements.txt
 
       - name: Run test suite
-        working-directory: skills/gpt-image-2
+        working-directory: skills/imager
         # No network: the only function that calls out is api_request, and
         # nothing in the suite reaches it. The CLI cases use --dry-run, which
         # returns before the request is built.
@@ -219,9 +219,9 @@ jobs:
       - name: Claude install
         run: |
           ./install.sh
-          test -L "$HOME/.claude/skills/gpt-image-2" || { echo "not a symlink"; exit 1; }
-          test -f "$HOME/.claude/skills/gpt-image-2/SKILL.md" || { echo "SKILL.md missing"; exit 1; }
-          test -x "$HOME/.claude/skills/gpt-image-2/.venv/bin/python" || { echo "venv missing"; exit 1; }
+          test -L "$HOME/.claude/skills/imager" || { echo "not a symlink"; exit 1; }
+          test -f "$HOME/.claude/skills/imager/SKILL.md" || { echo "SKILL.md missing"; exit 1; }
+          test -x "$HOME/.claude/skills/imager/.venv/bin/python" || { echo "venv missing"; exit 1; }
 
       - name: The installed skill can actually generate a prompt
         # --dry-run builds the full prompt from the preset and the platform and
@@ -230,14 +230,14 @@ jobs:
         env:
           OPENAI_API_KEY: test-key-not-real
         run: |
-          "$HOME/.claude/skills/gpt-image-2/.venv/bin/python" \
-            "$HOME/.claude/skills/gpt-image-2/scripts/gpt_image_2.py" \
+          "$HOME/.claude/skills/imager/.venv/bin/python" \
+            "$HOME/.claude/skills/imager/scripts/imager.py" \
             --dry-run --preset editorial --platform square "a test subject" /tmp/out.png
 
       - name: Codex install, and the rewritten paths resolve
         run: |
           ./install-codex.sh
-          target="$HOME/.codex/skills/gpt-image-2"
+          target="$HOME/.codex/skills/imager"
           test -f "$target/SKILL.md" || { echo "SKILL.md missing"; exit 1; }
           grep -q 'CLAUDE_SKILL_DIR' "$target/SKILL.md" && { echo "variable not substituted"; exit 1; }
           test -d "$target/references" || { echo "references/ not linked"; exit 1; }
@@ -253,7 +253,7 @@ jobs:
 
       - name: No dangling symlinks after either install
         run: |
-          found=$(find "$HOME/.claude/skills/gpt-image-2/" "$HOME/.codex/skills/gpt-image-2/" -xtype l 2>/dev/null || true)
+          found=$(find "$HOME/.claude/skills/imager/" "$HOME/.codex/skills/imager/" -xtype l 2>/dev/null || true)
           if [ -n "$found" ]; then echo "::error::dangling symlinks:"; echo "$found"; exit 1; fi
           echo "No dangling symlinks."
 

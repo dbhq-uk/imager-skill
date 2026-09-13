@@ -1,5 +1,5 @@
 {
-  "name": "gpt-image-2",
+  "name": "imager",
   "description": "Generate and edit images with OpenAI's GPT Image models, for Claude Code and Codex - gpt-image-2.5-flare, sunburst and gpt-image-2, 27 style presets, platform sizing for the places images actually go, transparent backgrounds, masked inpainting, carousels and photo edits. Drafts cost around $0.006, so the workflow iterates on drafts and only pays for the one you approved, it tells you the cost before it spends anything, and it records what was actually billed afterwards.",
   "version": "2.0.0",
   "author": {
@@ -7,7 +7,7 @@
     "email": "dan@dbhq.uk"
   },
   "homepage": "https://dbhq.uk",
-  "repository": "https://github.com/dbhq-uk/gpt-image-2-skill",
+  "repository": "https://github.com/dbhq-uk/imager-skill",
   "license": "MIT",
   "keywords": [
     "image-generation",

@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="assets/logo.svg" alt="gpt-image-2 skill for Claude Code, by DBHQ" width="460">
+<img src="assets/logo.svg" alt="imager skill for Claude Code, by DBHQ" width="460">
 
-# gpt-image-2
+# imager
 
 **Iterate on drafts, pay for the one you approved**
 
@@ -35,7 +35,7 @@ Generate and edit images with OpenAI's GPT Image models, through a guided flow r
 ### Any agent (Claude Code, Codex, Cursor, Copilot, Windsurf, Gemini, Cline and more)
 
 ```bash
-npx skills add dbhq-uk/gpt-image-2-skill
+npx skills add dbhq-uk/imager-skill
 ```
 
 The [skills.sh](https://skills.sh) CLI installs into whichever agent directories it finds.
@@ -43,8 +43,8 @@ The [skills.sh](https://skills.sh) CLI installs into whichever agent directories
 ### Local install (Claude Code or Codex)
 
 ```bash
-git clone https://github.com/dbhq-uk/gpt-image-2-skill.git
-cd gpt-image-2-skill
+git clone https://github.com/dbhq-uk/imager-skill.git
+cd imager-skill
 ./install.sh          # Claude Code: symlinks into ~/.claude/skills (edits are live)
 ./install-codex.sh    # Codex: installs into ~/.codex/skills
 ```
@@ -72,8 +72,8 @@ Describe what you want and the skill takes it from there.
 Or drive the CLI directly:
 
 ```bash
-PY=~/.claude/skills/gpt-image-2/.venv/bin/python
-GEN=~/.claude/skills/gpt-image-2/scripts/gpt_image_2.py
+PY=~/.claude/skills/imager/.venv/bin/python
+GEN=~/.claude/skills/imager/scripts/imager.py
 
 $PY $GEN --draft --preset editorial "a cat astronaut" out.png   # ~$0.006
 $PY $GEN --quality high --preset editorial "a cat astronaut" out.png
@@ -108,7 +108,7 @@ Published `gpt-image-2` figures at 1024x1024:
 Non-square is cheaper: at `high`, 1024x1536 and 1536x1024 are $0.165. OpenAI publishes no
 per-image table for the 2.5 models, so the estimator treats these as an upper bound for them and
 then replaces the guess with the billed figure read back from each call's token usage. The full
-workflow and CLI reference is in [`skills/gpt-image-2/SKILL.md`](skills/gpt-image-2/SKILL.md).
+workflow and CLI reference is in [`skills/imager/SKILL.md`](skills/imager/SKILL.md).
 
 ### No seed, no thinking mode
 
@@ -122,13 +122,13 @@ for consistency, `--quality` or `--model sunburst` for complex layouts.
 
 **Spend money without telling you first.** Every path prices the run before making it. `-y` exists to skip the confirmation in a batch, and it is the only way to turn that off.
 
-**Store your API key.** It is read from the environment on each run. The skill writes config, a generation log and a last-run record to `~/.dbhq/gpt-image-2/`, and none of the three has a field for a key.
+**Store your API key.** It is read from the environment on each run. The skill writes config, a generation log and a last-run record to `~/.dbhq/imager/`, and none of the three has a field for a key.
 
 ## Development
 
 Want to hack on the skill or run it from source with live edits? See [`docs/dev-setup.md`](docs/dev-setup.md).
 
-[`CONTRIBUTING.md`](CONTRIBUTING.md) covers working on it, and [`AGENTS.md`](AGENTS.md) is for an AI agent doing so. The skill itself is [`skills/gpt-image-2/SKILL.md`](skills/gpt-image-2/SKILL.md).
+[`CONTRIBUTING.md`](CONTRIBUTING.md) covers working on it, and [`AGENTS.md`](AGENTS.md) is for an AI agent doing so. The skill itself is [`skills/imager/SKILL.md`](skills/imager/SKILL.md).
 
 ## Acknowledgements
 

@@ -42,7 +42,7 @@ ignore = [
 "**/tests/*.py" = ["E402"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["gpt_image_2"]
+known-first-party = ["imager"]
 
 [tool.ruff.format]
 quote-style = "preserve"

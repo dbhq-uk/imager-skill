@@ -33,11 +33,11 @@ export OPENAI_API_KEY=sk-...
 
 # 3. Run the onboarding wizard
 ${CLAUDE_SKILL_DIR}/.venv/bin/python \
-  ${CLAUDE_SKILL_DIR}/scripts/gpt_image_2.py init
+  ${CLAUDE_SKILL_DIR}/scripts/imager.py init
 
 # 4. Try a draft image
 ${CLAUDE_SKILL_DIR}/.venv/bin/python \
-  ${CLAUDE_SKILL_DIR}/scripts/gpt_image_2.py \
+  ${CLAUDE_SKILL_DIR}/scripts/imager.py \
   --draft --preset editorial "a cat astronaut" ./cat.png
 ```
 
@@ -68,12 +68,12 @@ estimate. Both now fail with an error explaining what to use instead - the promp
 ## Files
 
 - `SKILL.md` - interactive workflow Claude follows when invoked
-- `scripts/gpt_image_2.py` - main CLI (Python, requires PyYAML)
+- `scripts/imager.py` - main CLI (Python, requires PyYAML)
 - `scripts/setup.sh` - creates the venv and installs PyYAML
 - `presets.yaml` - 27 style presets
 - `platforms.yaml` - 8 platform sizes
 - `references/api_reference.md` - full API documentation
 
-User config and history live at `~/.dbhq/gpt-image-2/`. Set `GPT_IMAGE_HOME` to relocate them.
+User config and history live at `~/.dbhq/imager/`. Set `GPT_IMAGE_HOME` to relocate them.
 
 See `SKILL.md` for the full interactive workflow and CLI reference.

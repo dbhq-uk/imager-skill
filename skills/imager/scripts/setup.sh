@@ -1,5 +1,5 @@
 #!/bin/bash
-# Set up the Python virtual environment for the gpt-image-2 skill.
+# Set up the Python virtual environment for the imager skill.
 #
 # This script:
 #   1. Creates a .venv/ in this directory
@@ -43,7 +43,7 @@ info "Installing dependencies"
 "$VENV/bin/pip" install -r "$SKILL_DIR/requirements.txt" -q
 ok "Dependencies installed"
 
-chmod +x "$SKILL_DIR/scripts/gpt_image_2.py"
+chmod +x "$SKILL_DIR/scripts/imager.py"
 
 if [ -n "$OPENAI_API_KEY" ]; then
     ok "OPENAI_API_KEY is set"
@@ -64,4 +64,4 @@ fi
 
 echo
 ok "Setup complete. Run the onboarding wizard:"
-echo "    $VENV/bin/python $SKILL_DIR/scripts/gpt_image_2.py init"
+echo "    $VENV/bin/python $SKILL_DIR/scripts/imager.py init"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install the gpt-image-2 skill into ~/.claude/skills/ as a live symlink install.
+# Install the imager skill into ~/.claude/skills/ as a live symlink install.
 #
 # SKILL.md references scripts via ${CLAUDE_SKILL_DIR}, which Claude Code
 # substitutes to the skill's own directory for personal, project, and plugin
@@ -16,7 +16,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_ROOT="$HOME/.claude/skills"
 
-echo "=== gpt-image-2 skill installer (Claude Code) ==="
+echo "=== imager skill installer (Claude Code) ==="
 echo
 
 # --- Dependencies ---
@@ -58,7 +58,7 @@ echo
 # Run unconditionally, unlike the garmin skill's installer. There is nothing to
 # prompt for here: the API key is read from the environment rather than stored,
 # so setup is idempotent and safe to repeat.
-"$SKILLS_ROOT/gpt-image-2/scripts/setup.sh"
+"$SKILLS_ROOT/imager/scripts/setup.sh"
 
 echo
 echo "Done. Try: 'generate an editorial image of a rocket'"

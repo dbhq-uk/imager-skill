@@ -1,5 +1,5 @@
 ---
-name: gpt-image-2
+name: imager
 description: Generate and edit images using OpenAI's GPT Image API (gpt-image-2.5-flare, gpt-image-2.5-sunburst, gpt-image-2). Interactive skill that guides users through image creation with style presets, a cost-aware draft/final workflow, transparent backgrounds, masked inpainting, carousels and photo editing. This skill should be used when the user requests image generation via OpenAI/GPT Image, wants to create social media carousels, edit photos into artistic styles, needs a logo or asset on a transparent background, or needs images with readable text (infographics, diagrams, posters).
 ---
 
@@ -29,7 +29,7 @@ one, read the history yourself:
 
 ```bash
 python3 -c "import json;from collections import Counter;from pathlib import Path
-h=Path.home()/'.dbhq/gpt-image-2/history.jsonl'
+h=Path.home()/'.dbhq/imager/history.jsonl'
 rows=[json.loads(l) for l in h.read_text().splitlines() if l.strip()]
 print(Counter((r.get('model'),r.get('quality')) for r in rows
   if (r.get('output_dir') or str(Path(r.get('output','/x')).parent))=='TARGET_DIR'))"
@@ -306,7 +306,7 @@ Always invoke through the skill's venv:
 
 ```bash
 PY=${CLAUDE_SKILL_DIR}/.venv/bin/python
-GEN=${CLAUDE_SKILL_DIR}/scripts/gpt_image_2.py
+GEN=${CLAUDE_SKILL_DIR}/scripts/imager.py
 
 # Basic generation (gpt-image-2.5-flare, quality low)
 $PY $GEN "prompt" output.png
@@ -373,13 +373,13 @@ times slower. Change the prompt or the input images. If the subject is legitimat
 
 ## Files
 
-- `scripts/gpt_image_2.py` - main CLI (Python, requires PyYAML)
+- `scripts/imager.py` - main CLI (Python, requires PyYAML)
 - `scripts/setup.sh` - creates the venv and installs PyYAML
 - `presets.yaml` - 27 style presets (visual + text-heavy + community + social)
 - `platforms.yaml` - 8 platform sizing presets
 - `references/api_reference.md` - full API documentation
-- `~/.dbhq/gpt-image-2/config.yaml` - user defaults
-- `~/.dbhq/gpt-image-2/history.jsonl` - generation log, including billed cost and token usage
-- `~/.dbhq/gpt-image-2/last.json` - last run (for `again`)
+- `~/.dbhq/imager/config.yaml` - user defaults
+- `~/.dbhq/imager/history.jsonl` - generation log, including billed cost and token usage
+- `~/.dbhq/imager/last.json` - last run (for `again`)
 
 `GPT_IMAGE_HOME` relocates all three, which is how the test suite runs against an empty history.

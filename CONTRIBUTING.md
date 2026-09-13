@@ -4,14 +4,14 @@ Thanks for your interest - contributions are welcome.
 
 ## Ways to help
 
-- Report a bug or request a feature via [issues](https://github.com/dbhq-uk/gpt-image-2-skill/issues)
+- Report a bug or request a feature via [issues](https://github.com/dbhq-uk/imager-skill/issues)
 - Add a preset, add a platform size, sharpen the interactive flow, or improve the skill instructions via a pull request
 
 ## Local development
 
 ```bash
-git clone https://github.com/dbhq-uk/gpt-image-2-skill.git
-cd gpt-image-2-skill
+git clone https://github.com/dbhq-uk/imager-skill.git
+cd imager-skill
 ./install.sh          # symlinks into ~/.claude/skills (edits are live)
 ```
 
@@ -22,7 +22,7 @@ You need an OpenAI API key to generate anything, but not to run the tests: nothi
 ## Before opening a PR
 
 - `ruff check . && ruff format --check .`
-- `cd skills/gpt-image-2 && OPENAI_API_KEY=test-key-not-real .venv/bin/python -m pytest tests/ -v` - all green
+- `cd skills/imager && OPENAI_API_KEY=test-key-not-real .venv/bin/python -m pytest tests/ -v` - all green
 - `shellcheck ./install.sh ./install-codex.sh ./skills/*/scripts/*.sh`
 - `claude plugin validate .`
 - If you touched prompt assembly or a preset, generate one real draft and look at it. It costs about $0.006, and no test can tell you the image got worse

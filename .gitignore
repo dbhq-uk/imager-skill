@@ -12,7 +12,7 @@ Thumbs.db
 .superpowers/
 
 # Python. Unlike the prose-only skills in this org, these are real: setup.sh
-# builds .venv inside skills/gpt-image-2/, which is exactly where SKILL.md
+# builds .venv inside skills/imager/, which is exactly where SKILL.md
 # expects it and exactly where it must never be committed.
 .venv/
 venv/

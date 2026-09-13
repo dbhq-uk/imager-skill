@@ -4,25 +4,29 @@ Guidance for AI agents (and people) working in this repository.
 
 ## What this is
 
-The **gpt-image-2** skill for AI coding agents - generate and edit images with OpenAI's GPT Image models (`gpt-image-2.5-flare` by default, plus `gpt-image-2.5-sunburst` and `gpt-image-2`), through a guided draft-then-final flow. It follows the [Agent Skills](https://agentskills.io) layout (`skills/<name>/SKILL.md`) and ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins).
+The **imager** skill for AI coding agents - generate and edit images with OpenAI's GPT Image models (`gpt-image-2.5-flare` by default, plus `gpt-image-2.5-sunburst` and `gpt-image-2`), through a guided draft-then-final flow. It follows the [Agent Skills](https://agentskills.io) layout (`skills/<name>/SKILL.md`) and ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins).
 
-The directory and the CLI file are still named `gpt-image-2` because renaming them would break every existing install path; the skill is not tied to that model.
+**The skill is called `imager`, and the model it calls is not.** It was named `gpt-image-2` until 13 Sep 2026, after the model it happened to launch on - which was wrong in both directions: it dated the skill to one model, and it read as OpenAI's product rather than DBHQ's. The rename is only the skill. `gpt-image-2`, `gpt-image-2.5-flare` and `gpt-image-2.5-sunburst` are OpenAI's model identifiers and appear throughout the code, the pricing tables and the docs unchanged.
+
+**If you are renaming anything else here, that is the line.** The skill, its directory, its CLI file, its plugin name and its settings directory are `imager`; every string that goes to the API stays exactly as OpenAI publishes it. In Python the test is mechanical: `imager.` is the module, and a quoted `"gpt-image-2"` is a model.
+
+The old settings directory is migrated on first run by `_migrate_legacy_settings()`, guarded on the destination not existing, so an existing install keeps working untouched. Output written under `~/gpt-image-2/outputs` before the rename is deliberately left where it is - those are the user's images, not skill state.
 
 ## Layout
 
 ```
 .claude-plugin/plugin.json                    # plugin manifest
-skills/gpt-image-2/SKILL.md                   # the skill (agent-facing instructions)
-skills/gpt-image-2/scripts/gpt_image_2.py     # the CLI, and all of the logic
-skills/gpt-image-2/scripts/setup.sh           # venv + PyYAML
-skills/gpt-image-2/presets.yaml               # 27 style presets
-skills/gpt-image-2/platforms.yaml             # 8 platform sizes
-skills/gpt-image-2/references/api_reference.md
-skills/gpt-image-2/tests/                     # pytest suite, no network
+skills/imager/SKILL.md                   # the skill (agent-facing instructions)
+skills/imager/scripts/imager.py     # the CLI, and all of the logic
+skills/imager/scripts/setup.sh           # venv + PyYAML
+skills/imager/presets.yaml               # 27 style presets
+skills/imager/platforms.yaml             # 8 platform sizes
+skills/imager/references/api_reference.md
+skills/imager/tests/                     # pytest suite, no network
 install.sh / install-codex.sh                 # local symlink installers (Claude / Codex)
 ```
 
-The venv lives at `skills/gpt-image-2/.venv`, built by `scripts/setup.sh` and gitignored. It is inside the skill directory on purpose: `${CLAUDE_SKILL_DIR}/.venv/bin/python` is then correct under a personal install, a Codex install and a plugin install without a lookup table.
+The venv lives at `skills/imager/.venv`, built by `scripts/setup.sh` and gitignored. It is inside the skill directory on purpose: `${CLAUDE_SKILL_DIR}/.venv/bin/python` is then correct under a personal install, a Codex install and a plugin install without a lookup table.
 
 ## The four constraints that must not be broken
 
@@ -34,7 +38,7 @@ An estimate is allowed to be too high and never too low. `cost_per_unit` prefers
 
 **2. The draft loop stays the default.** Generate low quality, show it, ask, then upgrade. It is not a nicety - it is a 97% saving on the iteration that finding a direction actually takes, and it is the only reason this is cheap enough to play with. If you are editing `SKILL.md` and about to let it jump to a final because the prompt looked confident, do not. Note that `config.yaml` must not carry a `quality` key by default: `cmd_init` used to write `quality: high` into it, which silently overrode the low default on every later call.
 
-**3. The API key is read, never written.** It comes from `OPENAI_API_KEY` (or `OPENROUTER_API_KEY`) in the environment on every run. `~/.dbhq/gpt-image-2/` holds config, a history log and a last-run record, and none of the three has a field for a key. Do not add one "for convenience", do not log the request headers, and do not write the key into the history entry so that `again` can replay it.
+**3. The API key is read, never written.** It comes from `OPENAI_API_KEY` (or `OPENROUTER_API_KEY`) in the environment on every run. `~/.dbhq/imager/` holds config, a history log and a last-run record, and none of the three has a field for a key. Do not add one "for convenience", do not log the request headers, and do not write the key into the history entry so that `again` can replay it.
 
 **4. Never accept a parameter the API does not have.** `--seed` and `--thinking` lived here for months: documented in `SKILL.md`, printed in the run line, written to `history.jsonl`, and never put in a request body. `--thinking` also multiplied the cost estimate, so the confirmation gate fired on numbers describing a request that had never been sent. Both are absent from `CreateImageRequest` and `CreateImageEditRequest` in `openai/openai-openapi`, and from the image generation guide.
 
@@ -60,7 +64,7 @@ CI checks that both are present on every preset, because a preset with one missi
 bash -n install.sh install-codex.sh
 shellcheck ./install.sh ./install-codex.sh ./skills/*/scripts/*.sh
 ruff check . && ruff format --check .
-cd skills/gpt-image-2 && OPENAI_API_KEY=test-key-not-real .venv/bin/python -m pytest tests/ -v
+cd skills/imager && OPENAI_API_KEY=test-key-not-real .venv/bin/python -m pytest tests/ -v
 claude plugin validate .
 ```
 

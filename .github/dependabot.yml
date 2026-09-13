@@ -20,7 +20,7 @@ updates:
   # smaller the dependency surface on a skill that holds an API key, the less
   # there is to audit. Kept current anyway.
   - package-ecosystem: pip
-    directory: /skills/gpt-image-2
+    directory: /skills/imager
     schedule:
       interval: weekly
       day: monday

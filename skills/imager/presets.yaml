@@ -1,5 +1,5 @@
 # GPT Image 2 Style Presets
-# Usage: gpt_image_2.py --preset <name> "subject description" output.png
+# Usage: imager.py --preset <name> "subject description" output.png
 #
 # Each preset defines a style wrapper around the user's subject.
 # The subject gets interpolated into the prompt template at {subject}.

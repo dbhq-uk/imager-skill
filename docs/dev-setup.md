@@ -1,6 +1,6 @@
-# Developer setup - gpt-image-2
+# Developer setup - imager
 
-Set the skill up from source with a **live symlink install**, so your edits are active immediately in Claude Code (and Codex). End users do not need this - they install with `npx skills add dbhq-uk/gpt-image-2-skill` or by cloning and running `./install.sh`.
+Set the skill up from source with a **live symlink install**, so your edits are active immediately in Claude Code (and Codex). End users do not need this - they install with `npx skills add dbhq-uk/imager-skill` or by cloning and running `./install.sh`.
 
 ## Prerequisites
 
@@ -12,8 +12,8 @@ Set the skill up from source with a **live symlink install**, so your edits are 
 ## 1. Clone
 
 ```bash
-git clone https://github.com/dbhq-uk/gpt-image-2-skill.git ~/dbhq-gpt-image-2
-cd ~/dbhq-gpt-image-2
+git clone https://github.com/dbhq-uk/imager-skill.git ~/dbhq-uk/imager-skill
+cd ~/dbhq-uk/imager-skill
 ```
 
 ## 2. Install (symlink)
@@ -25,19 +25,19 @@ cd ~/dbhq-gpt-image-2
 
 Any path the skill names uses `${CLAUDE_SKILL_DIR}` (the skill's own directory), which Claude Code substitutes for personal, project and plugin installs alike. So `install.sh` symlinks the **whole skill directory** into `~/.claude/skills/` - `SKILL.md`, `scripts/`, the catalogues and `references/` are all live, and every edit takes effect with no re-run. Codex does not substitute `${CLAUDE_SKILL_DIR}`, so `install-codex.sh` rewrites it to the install path - **re-run `./install-codex.sh` after editing a `SKILL.md`** for Codex.
 
-Both installers build the virtualenv at `skills/gpt-image-2/.venv` and install PyYAML into it. Setup is non-interactive: there is no credential to enter, because the key is read from the environment on every run.
+Both installers build the virtualenv at `skills/imager/.venv` and install PyYAML into it. Setup is non-interactive: there is no credential to enter, because the key is read from the environment on every run.
 
 The venv is inside the skill directory rather than somewhere shared, and that is deliberate: `${CLAUDE_SKILL_DIR}/.venv/bin/python` is then the right interpreter under every install shape without a lookup.
 
 ## 3. Verify without spending anything
 
 ```bash
-cd ~/dbhq-gpt-image-2/skills/gpt-image-2
+cd ~/dbhq-uk/imager-skill/skills/imager
 export OPENAI_API_KEY=test-key-not-real
 
-.venv/bin/python scripts/gpt_image_2.py list-presets
-.venv/bin/python scripts/gpt_image_2.py --dry-run --preset editorial "a rocket" out.png
-.venv/bin/python scripts/gpt_image_2.py --estimate --n 10 --quality high "batch"
+.venv/bin/python scripts/imager.py list-presets
+.venv/bin/python scripts/imager.py --dry-run --preset editorial "a rocket" out.png
+.venv/bin/python scripts/imager.py --estimate --n 10 --quality high "batch"
 .venv/bin/python -m pytest tests/ -v
 ```
 
@@ -51,7 +51,7 @@ After changing prompt assembly or a preset, generate one real draft and look at 
 
 ```bash
 export OPENAI_API_KEY=sk-...
-.venv/bin/python scripts/gpt_image_2.py --draft --preset editorial "a cat astronaut" /tmp/check.png
+.venv/bin/python scripts/imager.py --draft --preset editorial "a cat astronaut" /tmp/check.png
 ```
 
 That costs about $0.006 and it is the only check that can tell you the image got worse. A preset that reads well and renders badly passes every test in this repo.
@@ -60,14 +60,14 @@ That costs about $0.006 and it is the only check that can tell you the image got
 
 | File | Contents |
 |---|---|
-| `skills/gpt-image-2/SKILL.md` | The interactive flow: what to ask, in what order, and the cost table |
-| `skills/gpt-image-2/scripts/gpt_image_2.py` | The CLI, and all of the logic |
-| `skills/gpt-image-2/presets.yaml` | 21 presets, each a `description` and a `prompt` |
-| `skills/gpt-image-2/platforms.yaml` | 8 output sizes |
-| `skills/gpt-image-2/references/api_reference.md` | The API surface in full |
+| `skills/imager/SKILL.md` | The interactive flow: what to ask, in what order, and the cost table |
+| `skills/imager/scripts/imager.py` | The CLI, and all of the logic |
+| `skills/imager/presets.yaml` | 21 presets, each a `description` and a `prompt` |
+| `skills/imager/platforms.yaml` | 8 output sizes |
+| `skills/imager/references/api_reference.md` | The API surface in full |
 
 The two fields on a preset are not interchangeable. `description` is the menu label; `prompt` is what gets sent, and editing it changes every image that preset will ever produce. Treat that as a breaking change.
 
 ## Working across machines
 
-Editing anything under `~/dbhq-gpt-image-2` is live immediately in Claude Code - the skill directory is symlinked whole. For Codex, re-run `./install-codex.sh` after a `SKILL.md` edit. If you develop on more than one machine, `git pull` before you start and `git push` when done. The venv is local to each machine and is not in the repository, and neither is your API key.
+Editing anything under `~/dbhq-uk/imager-skill` is live immediately in Claude Code - the skill directory is symlinked whole. For Codex, re-run `./install-codex.sh` after a `SKILL.md` edit. If you develop on more than one machine, `git pull` before you start and `git push` when done. The venv is local to each machine and is not in the repository, and neither is your API key.

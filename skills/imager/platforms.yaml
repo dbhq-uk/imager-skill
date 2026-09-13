@@ -1,6 +1,6 @@
 # Platform-specific output presets
 # Each platform sets target dimensions; image is resized/cropped to fit.
-# Usage: gpt_image_2.py --platform youtube "subject" out.png
+# Usage: imager.py --platform youtube "subject" out.png
 
 youtube:
   description: "YouTube thumbnail"
