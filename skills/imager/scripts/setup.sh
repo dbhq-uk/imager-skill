@@ -33,6 +33,24 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
+# A venv is NOT RELOCATABLE: every script in bin/ carries a shebang with the
+# absolute interpreter path it was built with, so moving or renaming the skill
+# directory leaves a venv that exists and cannot be used. That is what the
+# 13 Sep 2026 rename from gpt-image-2 to imager did, and it failed with
+# "bin/pip: cannot execute: required file not found" - a message naming neither
+# the cause nor the fix.
+#
+# PROBE A SCRIPT, NOT THE INTERPRETER. `bin/python` is a symlink to the system
+# python and keeps working after a move, so `bin/python -c ""` succeeds on a
+# venv that is entirely unusable - that was the first version of this check and
+# it passed while pip was broken. `bin/pip --version` is the thing that
+# actually fails, so it is the thing to test.
+if [ -d "$VENV" ] && ! "$VENV/bin/pip" --version >/dev/null 2>&1; then
+    warn "The venv at $VENV cannot run - most likely the skill directory moved"
+    info "Rebuilding it. Nothing is lost: a venv is derived, not data"
+    rm -rf "$VENV"
+fi
+
 if [ ! -d "$VENV" ]; then
     info "Creating venv at $VENV"
     python3 -m venv "$VENV"
