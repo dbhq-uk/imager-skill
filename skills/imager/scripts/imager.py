@@ -65,8 +65,7 @@ def _migrate_legacy_settings() -> None:
     new_dir = Path.home() / ".dbhq" / "imager"
     if new_dir.exists():
         return
-    for old_dir in (Path.home() / ".dbhq" / "gpt-image-2",
-                    Path.home() / ".config" / "gpt-image-2"):
+    for old_dir in (Path.home() / ".dbhq" / "gpt-image-2", Path.home() / ".config" / "gpt-image-2"):
         if not old_dir.is_dir():
             continue
         new_dir.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
