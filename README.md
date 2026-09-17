@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.svg" alt="imager skill for Claude Code, by DBHQ" width="460">
+<img src="assets/logo.svg" alt="imager skill for Claude Code, by DBHQ" width="560">
 
 # imager
 
@@ -10,7 +10,7 @@
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://code.claude.com/docs/en/plugins)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20WSL-lightgrey)]()
 
-A free, open-source tool by [DBHQ](https://dbhq.uk)
+A free, open-source tool by [DBHQ](https://dbhq.uk) - documented at [skills.dbhq.uk](https://skills.dbhq.uk/imager/)
 
 </div>
 
@@ -32,13 +32,21 @@ Generate and edit images with OpenAI's GPT Image models, through a guided flow r
 
 ## Install
 
-### Any agent (Claude Code, Codex, Cursor, Copilot, Windsurf, Gemini, Cline and more)
+### As a Claude Code plugin (recommended)
+
+```
+/plugin marketplace add dbhq-uk/marketplace
+/plugin install imager@dbhq
+```
+
+### Any agent (Cursor, Copilot, Windsurf, Gemini, Cline and more)
 
 ```bash
 npx skills add dbhq-uk/imager-skill
 ```
 
-The [skills.sh](https://skills.sh) CLI installs into whichever agent directories it finds.
+The [skills.sh](https://skills.sh) CLI installs into whichever agent directories
+it finds, so this works outside Claude Code and Codex too.
 
 ### Local install (Claude Code or Codex)
 
@@ -49,13 +57,18 @@ cd imager-skill
 ./install-codex.sh    # Codex: installs into ~/.codex/skills
 ```
 
-[`install.sh`](install.sh) and [`install-codex.sh`](install-codex.sh) are the same install two ways: Claude Code substitutes `${CLAUDE_SKILL_DIR}` so the whole skill directory is symlinked untouched, while Codex does not, so its `SKILL.md` is rewritten at install time. Both build a virtualenv inside the skill directory and install PyYAML into it.
+[`install.sh`](install.sh) and [`install-codex.sh`](install-codex.sh) are the
+same install two ways: Claude Code substitutes `${CLAUDE_SKILL_DIR}`, so the
+whole skill directory is symlinked untouched, while Codex does not, so its
+`SKILL.md` is rewritten at install time. Re-run the Codex one after editing
+`SKILL.md`.
 
 ### Requirements
 
 - **Python 3.9+**
 - **An OpenAI API key** in `OPENAI_API_KEY`. It is read from the environment and never written to disk by this skill. To route via OpenRouter instead, set `OPENROUTER_API_KEY` and pass `--provider openrouter`
 - **ImageMagick** (optional) - needed only for platform resizing and carousel contact sheets
+
 
 ## Usage
 
@@ -133,6 +146,29 @@ Want to hack on the skill or run it from source with live edits? See [`docs/dev-
 ## Acknowledgements
 
 Adapted from [glebis/claude-skills](https://github.com/glebis/claude-skills/tree/main/gpt-image-2) (MIT), which is where the preset catalogue and the draft-then-final shape come from.
+
+## Also from DBHQ
+
+Fifteen free agent skills, all of them installable from the same marketplace and
+all documented at **[skills.dbhq.uk](https://skills.dbhq.uk)**.
+
+| Skill | What it does |
+|---|---|
+| [outlook](https://skills.dbhq.uk/outlook/) | Microsoft 365 mail and calendar, from the terminal |
+| [trello](https://skills.dbhq.uk/trello/) | Your boards, run from your agent |
+| [legwork](https://skills.dbhq.uk/legwork/) | Research that settles a decision, and says when it cannot |
+| [dovetail](https://skills.dbhq.uk/dovetail/) | Checks whether your repository still agrees with itself |
+| [verve](https://skills.dbhq.uk/verve/) | Strips AI tells from prose and puts a voice back |
+| [vela](https://skills.dbhq.uk/vela/) | Compiler-exact code search for .NET |
+| [garmin](https://skills.dbhq.uk/garmin/) | Your Garmin data, answered in the terminal |
+| [gitview](https://skills.dbhq.uk/gitview/) | Which branches are finished, and safe to delete |
+| [atlassian](https://skills.dbhq.uk/atlassian/) | Jira issues and Confluence pages |
+| [pennyblack](https://skills.dbhq.uk/pennyblack/) | A physical letter, posted from the terminal |
+| [buildwork](https://skills.dbhq.uk/buildwork/) | Your open issues, run as parallel agents |
+| [deskwork](https://skills.dbhq.uk/deskwork/) | What an agent noticed, tracked as real work |
+| [groupwork](https://skills.dbhq.uk/groupwork/) | A second agent on the work, adversary or partner |
+
+Plus [heliograph](https://skills.dbhq.uk/heliograph/), for a machine you cannot log into.
 
 ## License
 
