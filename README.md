@@ -159,7 +159,7 @@ all documented at **[skills.dbhq.uk](https://skills.dbhq.uk)**.
 | [legwork](https://skills.dbhq.uk/legwork/) | Research that settles a decision, and says when it cannot |
 | [dovetail](https://skills.dbhq.uk/dovetail/) | Checks whether your repository still agrees with itself |
 | [verve](https://skills.dbhq.uk/verve/) | Strips AI tells from prose and puts a voice back |
-| [vela](https://skills.dbhq.uk/vela/) | Compiler-exact code search for .NET |
+| [vela](https://skills.dbhq.uk/vela/) | Compiler-exact code search, in any language you index |
 | [garmin](https://skills.dbhq.uk/garmin/) | Your Garmin data, answered in the terminal |
 | [gitview](https://skills.dbhq.uk/gitview/) | Which branches are finished, and safe to delete |
 | [atlassian](https://skills.dbhq.uk/atlassian/) | Jira issues and Confluence pages |
