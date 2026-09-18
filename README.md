@@ -70,6 +70,15 @@ whole skill directory is symlinked untouched, while Codex does not, so its
 - **ImageMagick** (optional) - needed only for platform resizing and carousel contact sheets
 
 
+## Requirements
+
+**Python 3.9 or newer**, and an `OPENAI_API_KEY` - this skill calls a paid
+API and does nothing useful without one. `install.sh` builds a virtualenv
+inside the skill directory.
+
+**ImageMagick is optional** and needed only for platform resizing and
+carousel contact sheets. Everything else works without it.
+
 ## Usage
 
 Describe what you want and the skill takes it from there.
@@ -170,6 +179,6 @@ all documented at **[skills.dbhq.uk](https://skills.dbhq.uk)**.
 
 Plus [heliograph](https://skills.dbhq.uk/heliograph/), for a machine you cannot log into.
 
-## License
+## Licence
 
 [MIT](LICENSE) © 2026 DBHQ Consulting Ltd
