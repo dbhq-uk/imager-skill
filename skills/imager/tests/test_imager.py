@@ -791,6 +791,75 @@ class TestDirMatches(unittest.TestCase):
         self.assertFalse(imager.dir_matches("a/b/c/d/e", "/x/y"))
 
 
+class TestNoOverwrite(IsolatedHome):
+    """A run never destroys a file it did not make, unless told to."""
+
+    def test_an_existing_image_is_kept_and_the_run_writes_a_new_name(self):
+        original = self.root / "a.png"
+        original.write_bytes(b"paid for already")
+        code, out, err, _ = self.generate("a subject", str(original))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(original.read_bytes(), b"paid for already")
+        self.assertEqual((self.root / "a-2.png").read_bytes(), tiny_png())
+        self.assertIn("already exists", err)
+        self.assertIn("a-2.png", err)
+        self.assertEqual(self.history_rows()[-1]["output"], str(self.root / "a-2.png"))
+
+    def test_the_next_free_number_is_used(self):
+        (self.root / "a.png").write_bytes(b"one")
+        (self.root / "a-2.png").write_bytes(b"two")
+        self.generate("a subject", str(self.root / "a.png"))
+        self.assertTrue((self.root / "a-3.png").exists())
+        self.assertEqual((self.root / "a-2.png").read_bytes(), b"two")
+
+    def test_overwrite_replaces_the_file(self):
+        original = self.root / "a.png"
+        original.write_bytes(b"old")
+        code, _, err, _ = self.generate("--overwrite", "a subject", str(original))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(original.read_bytes(), tiny_png())
+        self.assertFalse((self.root / "a-2.png").exists())
+
+    def test_dry_run_names_the_file_it_would_write(self):
+        (self.root / "a.png").write_bytes(b"old")
+        code, out, err, _ = self.generate("--dry-run", "a subject", str(self.root / "a.png"))
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"Output:    {self.root / 'a-2.png'}", out)
+
+    def test_a_multi_image_run_moves_aside_as_a_whole(self):
+        (self.root / "set-01.png").write_bytes(b"old")
+        code, _, err, _ = self.generate("--n", "2", "a subject", str(self.root / "set.png"))
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.root / "set-01.png").read_bytes(), b"old")
+        self.assertTrue((self.root / "set-2-01.png").exists())
+        self.assertTrue((self.root / "set-2-02.png").exists())
+
+    def test_a_same_stem_json_is_never_replaced(self):
+        # Generating package.png used to replace package.json.
+        package = self.root / "package.json"
+        package.write_text('{"name": "not an image"}')
+        for flags in ((), ("--sidecar",), ("--sidecar", "--overwrite")):
+            with self.subTest(flags=flags):
+                code, _, err, _ = self.generate(*flags, "a subject", str(self.root / "package.png"))
+                self.assertEqual(code, 0, err)
+                self.assertEqual(package.read_text(), '{"name": "not an image"}')
+
+    def test_no_sidecar_is_written_by_default(self):
+        self.generate("a subject", str(self.root / "a.png"))
+        self.assertFalse((self.root / "a.json").exists())
+
+    def test_sidecar_is_written_when_asked_for(self):
+        self.generate("--sidecar", "a subject", str(self.root / "a.png"))
+        self.assertEqual(json.loads((self.root / "a.json").read_text())["prompt"], "a subject")
+
+    def test_save_image_refuses_to_replace_without_overwrite(self):
+        target = self.root / "a.png"
+        target.write_bytes(b"old")
+        with self.assertRaises(FileExistsError):
+            imager.save_image(base64.b64encode(b"new").decode(), target)
+        self.assertEqual(target.read_bytes(), b"old")
+
+
 class TestRetiredProvider(IsolatedHome):
     def test_openrouter_in_config_is_rejected_before_anything_is_sent(self):
         imager.ensure_config_dir()

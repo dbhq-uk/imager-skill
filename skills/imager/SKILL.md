@@ -232,6 +232,15 @@ JPEG has no alpha channel.
 latter two. WebP is the right default for anything going on a website. The file extension
 follows the format automatically.
 
+## Output files
+
+A run never replaces an existing file. If `out.png` exists, it writes `out-2.png` (then `-3`,
+and so on) and says so; a multi-image run moves aside as a whole. Pass `--overwrite` only when
+replacing the file is the point. Report the path the CLI printed, not the one you asked for.
+
+No JSON sidecar is written by default: `history.jsonl` already holds the record. `--sidecar`
+writes `<image>.json` beside the image, and never over an existing file.
+
 ## Cost Awareness
 
 Always communicate costs before generating.
@@ -352,6 +361,9 @@ $PY $GEN --estimate --n 10 --quality high "batch test"
 
 # Skip confirmation
 $PY $GEN -y --n 10 "batch" out.png
+
+# Replace an existing file instead of writing out-2.png
+$PY $GEN --overwrite "prompt" out.png
 
 # Dry run (show prompt without API call)
 $PY $GEN --dry-run --preset editorial "test" out.png
