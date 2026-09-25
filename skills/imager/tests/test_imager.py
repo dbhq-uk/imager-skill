@@ -724,6 +724,21 @@ class TestDirMatches(unittest.TestCase):
         self.assertFalse(imager.dir_matches("a/b/c/d/e", "/x/y"))
 
 
+class TestDraftSize(IsolatedHome):
+    def test_draft_honours_the_config_size(self):
+        imager.ensure_config_dir()
+        imager.CONFIG_FILE.write_text("size: 1536x1024\n")
+        code, out, err, _ = self.generate("--dry-run", "--draft", "a test", str(self.root / "a.png"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("Size:      1536x1024", out)
+
+    def test_the_draft_request_carries_the_size(self):
+        code, _, err, calls = self.generate("--draft", "--platform", "story", "a test", str(self.root / "a.png"))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls[0]["size"], "1088x1920")
+        self.assertEqual(calls[0]["quality"], "low")
+
+
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class TestSetIdentityAcrossWorktrees(IsolatedHome):
     """A set is a folder in a repository, not an absolute path.
@@ -849,6 +864,25 @@ class TestCli(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("DRAFT", result.stdout)
         self.assertIn("Quality:   low", result.stdout)
+
+    def test_draft_keeps_the_platform_aspect(self):
+        # The draft is where the composition is approved. Generated at auto, it
+        # was composed at a different aspect from the final it stood in for.
+        result = run_cli("--dry-run", "--draft", "--platform", "story", "a test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Size:      1088x1920", result.stdout)
+
+    def test_draft_keeps_an_explicit_size(self):
+        result = run_cli("--dry-run", "--draft", "--size", "1536x864", "a test")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Size:      1536x864", result.stdout)
+
+    def test_draft_and_final_are_generated_at_the_same_size(self):
+        draft = run_cli("--dry-run", "--draft", "--platform", "blog", "a test")
+        final = run_cli("--dry-run", "--quality", "high", "--platform", "blog", "a test")
+        size = [line for line in final.stdout.splitlines() if line.startswith("Size:")]
+        self.assertEqual(len(size), 1)
+        self.assertIn(size[0], draft.stdout)
 
     def test_estimate_only_reports_cost(self):
         result = run_cli("--estimate", "a red bicycle")

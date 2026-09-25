@@ -131,7 +131,8 @@ before spending anything and tells you the nearest legal size.
 
 **Always generate a draft first** unless the user says "skip draft".
 
-1. Generate with `--draft` (quality=low, ~$0.006/image)
+1. Generate with `--draft` (quality=low, ~$0.006/image), with the same `--platform` or `--size`
+   the final will use. The draft is generated at that aspect, so it is composed as the final will be
 2. Show the image to the user (see "Showing the result" below)
 3. Ask: "Like this direction? I can: (a) generate final quality, (b) adjust the prompt,
    (c) try a different style, (d) regenerate"
