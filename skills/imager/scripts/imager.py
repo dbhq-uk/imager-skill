@@ -738,6 +738,10 @@ class HistoryEntry:
     estimated_cost: float | None
     actual_cost: float | None
     usage: dict | None
+    # The set identity: the repository's common git directory and the output
+    # directory relative to its top level. Null outside git. See set_key.
+    repo: str | None = None
+    repo_dir: str | None = None
 
 
 def save_history(entry: HistoryEntry) -> None:
@@ -808,6 +812,86 @@ def dir_matches(where: str, target: str) -> bool:
     return Path(target).parts[-len(parts) :] == parts
 
 
+# Variables that would point git at some other repository than the one the
+# directory is in. A hook or a wrapper script can leave them set.
+_GIT_ENV_OVERRIDES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
+def set_key(directory) -> tuple | None:
+    """(repository, directory relative to its top level), or None outside git.
+
+    An absolute path is the wrong identity for a set. Every git worktree of one
+    repository puts the same images/ folder at a different absolute path, and a
+    worktree made for one session is gone by the next, so a set keyed on its
+    absolute path is a new set every session. The repository is identified by
+    its common git directory, which every worktree of it shares, and the set by
+    its path from the top of whichever worktree it is in.
+
+    The directory need not exist yet: git is asked from the nearest ancestor
+    that does, which is the case for a first image into a new folder.
+    """
+    try:
+        target = Path(directory).resolve()
+    except (OSError, RuntimeError):
+        return None
+    probe = target
+    while not probe.is_dir():
+        if probe.parent == probe:
+            return None
+        probe = probe.parent
+    git = shutil.which("git")
+    if not git:
+        return None
+    env = {k: v for k, v in os.environ.items() if k not in _GIT_ENV_OVERRIDES}
+    try:
+        result = subprocess.run(
+            [git, "-C", str(probe), "rev-parse", "--git-common-dir", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) < 2:
+        return None
+    common = Path(lines[0])
+    if not common.is_absolute():
+        common = probe / common
+    try:
+        relative = target.relative_to(Path(lines[1]).resolve())
+        return (str(common.resolve()), relative.as_posix())
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def set_fields(directory) -> dict:
+    """The set identity a history row carries: repo and repo_dir, or nulls outside git."""
+    key = set_key(directory)
+    return {"repo": key[0], "repo_dir": key[1]} if key else {"repo": None, "repo_dir": None}
+
+
+def _row_key(entry: dict, leaf: str, cache: dict) -> tuple | None:
+    """The set key for one history row.
+
+    New rows carry it. Older rows only have an absolute directory, so the key is
+    worked out from that directory when it still exists - which is what lets a
+    set made in the main checkout before this field existed be found from a
+    worktree. Only rows whose last path component matches the target's are
+    asked, because a different folder name cannot be the same set and each
+    lookup is a git call.
+    """
+    if entry.get("repo") and entry.get("repo_dir"):
+        return (entry["repo"], entry["repo_dir"])
+    where = entry_dir(entry)
+    if not where or not Path(where).is_absolute() or Path(where).name != leaf:
+        return None
+    if where not in cache:
+        cache[where] = set_key(where) if Path(where).is_dir() else None
+    return cache[where]
+
+
 def set_profile(output_path) -> dict:
     """What model and quality this directory's SET was made at.
 
@@ -822,17 +906,27 @@ def set_profile(output_path) -> dict:
     Nothing had to be guessed to avoid that. The answer was in history.jsonl the
     whole time. Model is tracked for the same reason: a set that is half Flare
     and half gpt-image-2 does not read as one set either.
+
+    A row matches on its repository and repo-relative directory first (see
+    set_key), so the same folder in another worktree is the same set. It falls
+    back to the absolute path, which is all there is outside git.
     """
     try:
-        target = str(Path(output_path).resolve().parent)
+        target_path = Path(output_path).resolve().parent
     except Exception:  # noqa: BLE001
         return {"quality": None, "model": None, "count": 0}
+    target = str(target_path)
+    target_key = set_key(target_path)
+    cache: dict = {}
     qualities: dict = {}
     models: dict = {}
     count = 0
     for e in read_history_entries():
-        where = entry_dir(e)
-        if not where or not dir_matches(where, target):
+        same_set = bool(target_key) and _row_key(e, target_path.name, cache) == target_key
+        if not same_set:
+            where = entry_dir(e)
+            same_set = bool(where) and dir_matches(where, target)
+        if not same_set:
             continue
         count += e.get("n") or 1
         q = e.get("quality")
@@ -1179,6 +1273,7 @@ def cmd_generate(args):
         estimated_cost=estimated,
         actual_cost=actual,
         usage=usage or None,
+        **set_fields(saved_paths[0].resolve().parent),
     )
     save_history(entry)
     for p in saved_paths:
