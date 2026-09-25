@@ -1,4 +1,4 @@
-# GPT Image Skill
+# imager
 
 Generate and edit images via OpenAI's GPT Image API with an interactive, guided workflow.
 

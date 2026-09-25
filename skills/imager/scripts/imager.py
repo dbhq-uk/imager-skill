@@ -1550,7 +1550,7 @@ def save_metadata(output_path: Path, entry: HistoryEntry) -> Path | None:
 
 
 def cmd_init():
-    print("GPT Image - Setup Wizard\n")
+    print("imager - setup\n")
 
     fit, sheet = imagemagick("convert"), imagemagick("montage")
     if fit and sheet:
@@ -2623,14 +2623,14 @@ def main():
         return
 
     parser = argparse.ArgumentParser(
-        description="GPT Image - OpenAI Image Generation",
+        description="imager - generate and edit images with OpenAI's GPT Image models",
         epilog="Commands: init, list-models, list-presets, list-platforms, again, history, set-check, batch",
     )
     sub = parser.add_subparsers(dest="command")
 
     gen_parser = argparse.ArgumentParser(
         prog="imager.py",
-        description="GPT Image - Generate images from text prompts",
+        description="imager - generate an image from a text prompt, or edit one",
     )
     gen_parser.add_argument("prompt", nargs="?", help="Text prompt for image generation")
     gen_parser.add_argument("output", nargs="?", help="Output file path (default: auto-named)")

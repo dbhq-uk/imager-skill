@@ -1930,6 +1930,46 @@ class TestSkillMdShape(unittest.TestCase):
         self.assertIn("--dry-run", step4)
 
 
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+
+@unittest.skipUnless((REPO_ROOT / "README.md").exists(), "not run from a clone of the repository")
+class TestRepoDocs(unittest.TestCase):
+    """Small drift in the prose around the skill, held so it does not come back."""
+
+    def read(self, relative: str) -> str:
+        return (REPO_ROOT / relative).read_text(encoding="utf-8")
+
+    def test_no_document_calls_the_default_model_gpt_image_2(self):
+        # The default is gpt-image-2.5-flare. "GPT Image 2" in prose dated the
+        # skill to the model it launched on.
+        for relative in (
+            "README.md",
+            "CONTRIBUTING.md",
+            "AGENTS.md",
+            "skills/imager/README.md",
+            "skills/imager/SKILL.md",
+            "skills/imager/presets.json",
+        ):
+            with self.subTest(file=relative):
+                self.assertNotIn("GPT Image 2", self.read(relative))
+
+    def test_the_readme_has_one_requirements_section(self):
+        lines = self.read("README.md").splitlines()
+        headings = [line for line in lines if line.startswith("#") and line.lstrip("#").strip() == "Requirements"]
+        self.assertEqual(len(headings), 1, headings)
+
+    def test_the_skill_readme_is_titled_with_the_skill_name(self):
+        self.assertEqual(self.read("skills/imager/README.md").splitlines()[0], "# imager")
+
+    def test_the_cli_names_the_skill_not_the_model_family(self):
+        help_text = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True, check=True
+        ).stdout
+        self.assertIn("imager - ", help_text)
+        self.assertNotIn("GPT Image -", help_text)
+
+
 class TestDraftSize(IsolatedHome):
     def test_draft_honours_the_config_size(self):
         imager.ensure_config_dir()

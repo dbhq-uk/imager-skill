@@ -55,7 +55,7 @@ it finds, so this works outside Claude Code and Codex too.
 ```bash
 git clone https://github.com/dbhq-uk/imager-skill.git
 cd imager-skill
-./install.sh          # Claude Code: symlinks into ~/.claude/skills (edits are live)
+./install.sh          # Claude Code: a live symlink install (edits take effect at once)
 ./install-codex.sh    # Codex: installs into ~/.codex/skills
 ```
 
@@ -65,21 +65,11 @@ whole skill directory is symlinked untouched, while Codex does not, so its
 `SKILL.md` is rewritten at install time. Re-run the Codex one after editing
 `SKILL.md`.
 
-### Requirements
-
-- **Python 3.9+**
-- **An OpenAI API key** in `OPENAI_API_KEY`. It is read from the environment and never written to disk by this skill
-- **ImageMagick** (optional) - needed only for platform resizing and carousel contact sheets
-
-
 ## Requirements
 
-**Python 3.9 or newer**, and an `OPENAI_API_KEY` - this skill calls a paid
-API and does nothing useful without one. Nothing else to install: the CLI uses
-the standard library only.
-
-**ImageMagick is optional** and needed only for platform resizing and
-carousel contact sheets. Everything else works without it.
+- **Python 3.9 or newer.** Nothing else to install: the CLI uses the standard library only.
+- **An OpenAI API key** in `OPENAI_API_KEY`. This skill calls a paid API and does nothing useful without one. The key is read from the environment and never written to disk by this skill.
+- **ImageMagick 7 or 6** (optional), needed only for platform resizing and carousel contact sheets. Everything else works without it.
 
 ## Usage
 
@@ -93,11 +83,11 @@ Describe what you want and the skill takes it from there.
 "four variants of a mountain in ink style"
 ```
 
-Or drive the CLI directly:
+Or drive the CLI directly. From a clone of this repository:
 
 ```bash
 PY=python3
-GEN=~/.claude/skills/imager/scripts/imager.py
+GEN=skills/imager/scripts/imager.py
 
 $PY $GEN --draft --preset editorial "a cat astronaut" out.png   # ~$0.006
 $PY $GEN --quality high --preset editorial "a cat astronaut" out.png

@@ -111,11 +111,12 @@ jobs:
       # the bug this skill carried until it moved here: it lived in a personal
       # repo, was only ever installed one way, and every path in SKILL.md was
       # hardcoded. Asserted rather than trusted, because it reappears every time
-      # someone pastes a working command out of their own terminal.
+      # someone pastes a working command out of their own terminal. The root
+      # README is checked too: its CLI example carried one after skills/ was clean.
       - name: No hardcoded install paths
         run: |
-          if grep -rn '~/\.claude/skills\|\$HOME/\.claude/skills' skills/; then
-            echo "::error::Hardcoded install path found. Use \${CLAUDE_SKILL_DIR} instead."
+          if grep -rn '~/\.claude/skills\|\$HOME/\.claude/skills' skills/ README.md; then
+            echo "::error::Hardcoded install path found. Use \${CLAUDE_SKILL_DIR} in skills/, or a path from the repository root in README.md."
             exit 1
           fi
           echo "No hardcoded install paths."
