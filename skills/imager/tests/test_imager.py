@@ -194,8 +194,10 @@ class TestModels(unittest.TestCase):
 
 
 class TestCostModel(unittest.TestCase):
+    """The estimate is priced from tokens: text in, images in, image out."""
+
     def setUp(self):
-        # measured_cost reads history, so point it at an empty file.
+        # The measured figures read history, so point it at an empty file.
         self.tmp = tempfile.TemporaryDirectory()
         self._saved = imager.HISTORY_FILE
         imager.HISTORY_FILE = Path(self.tmp.name) / "history.jsonl"
@@ -204,24 +206,117 @@ class TestCostModel(unittest.TestCase):
         imager.HISTORY_FILE = self._saved
         self.tmp.cleanup()
 
-    def test_published_figures_are_used_when_they_exist(self):
-        cost, basis = imager.cost_per_unit("gpt-image-2", "low", "1024x1024")
-        self.assertAlmostEqual(cost, 0.006)
-        self.assertEqual(basis, "published")
+    def out_rate(self, model: str = imager.DEFAULT_MODEL) -> float:
+        return imager.TOKEN_PRICES[model]["image_out"] / 1_000_000
+
+    def write_rows(self, *rows: dict) -> None:
+        imager.HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with imager.HISTORY_FILE.open("a") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+    def run_row(self, output_tokens: int, size: str = "1024x1024", n: int = 1, inputs: int = 0, **kw) -> dict:
+        row = {
+            "timestamp": "2026-09-12T10:00:00",
+            "model": "gpt-image-2.5-flare",
+            "quality": "medium",
+            "size": size,
+            "n": n,
+            "inputs": inputs,
+            "usage": {"output_tokens": output_tokens * n},
+        }
+        row.update(kw)
+        return row
+
+    # --- the two failures the issue names ---
+
+    def test_an_edit_with_one_input_image_is_priced_with_it(self):
+        # Flare low with one reference bills $0.0114-0.015. Output-only pricing
+        # quoted $0.0034, which is the under-quote the gate cannot survive.
+        for size in ("auto", "1024x1024"):
+            with self.subTest(size=size):
+                per, _ = imager.cost_per_unit("gpt-image-2.5-flare", "low", size, inputs=1, prompt="a subject")
+                self.assertGreaterEqual(per, 0.015)
+
+    def test_flare_high_square_is_not_quoted_at_gpt_image_2s_price(self):
+        # It bills 1,756 output tokens, about $0.053. The old ceiling said $0.211.
+        per, _ = imager.cost_per_unit("gpt-image-2.5-flare", "high", "1024x1024", prompt="a subject")
+        self.assertLess(per, 0.10)
+        self.assertGreaterEqual(per, 1756 * self.out_rate())
+
+    def test_sunburst_xhigh_three_images_is_quoted_near_its_bill(self):
+        # Billed about $0.156 for three at 1536x768; the old ceiling said $1.20.
+        cost = imager.estimate_cost("gpt-image-2.5-sunburst", "xhigh", "1536x768", 3, prompt="a subject")
+        self.assertGreaterEqual(cost, 3 * 1628 * self.out_rate())
+        self.assertLess(cost, 0.156 * 1.5)
+
+    # --- the parts of the price ---
+
+    def test_gpt_image_2_matches_its_published_prices(self):
+        for quality, published in (("low", 0.006), ("medium", 0.053), ("high", 0.211)):
+            with self.subTest(quality=quality):
+                per, basis = imager.cost_per_unit("gpt-image-2", quality, "1024x1024")
+                self.assertEqual(basis, "published")
+                # Published prices are rounded to a tenth of a cent.
+                self.assertGreaterEqual(per, published - 0.0005)
+                self.assertLess(per, published * 1.05)
+
+    def test_each_input_image_is_billed_once_per_output_image(self):
+        none = imager.estimate_cost(imager.DEFAULT_MODEL, "low", "1024x1024", 3)
+        two = imager.estimate_cost(imager.DEFAULT_MODEL, "low", "1024x1024", 3, inputs=2)
+        rate = imager.TOKEN_PRICES[imager.DEFAULT_MODEL]["image_in"] / 1_000_000
+        self.assertAlmostEqual(two - none, 3 * 2 * imager.INPUT_IMAGE_TOKENS * rate)
+
+    def test_the_prompt_text_is_priced(self):
+        short, _ = imager.cost_per_unit(imager.DEFAULT_MODEL, "low", "1024x1024", prompt="a cat")
+        long, _ = imager.cost_per_unit(imager.DEFAULT_MODEL, "low", "1024x1024", prompt="a cat " * 300)
+        self.assertGreater(long, short)
+
+    def test_the_size_rule_reads_at_or_just_above_every_measured_size(self):
+        # Output tokens at each size, as a share of the same tier at 1024x1024,
+        # as the API actually returned them.
+        measured = {
+            "1024x1344": 0.832,
+            "1536x960": 0.712,
+            "1920x1088": 0.755,
+            "1536x864": 0.614,
+            "2400x800": 0.429,
+            "1792x608": 0.338,
+            "1536x512": 0.286,
+        }
+        for size, share in measured.items():
+            with self.subTest(size=size):
+                factor, inside = imager.size_factor(size)
+                self.assertTrue(inside)
+                self.assertGreaterEqual(factor, share)
+                self.assertLess(factor, share * 1.1)
 
     def test_non_square_is_cheaper_than_square_at_the_same_quality(self):
         square, _ = imager.cost_per_unit("gpt-image-2", "high", "1024x1024")
         portrait, _ = imager.cost_per_unit("gpt-image-2", "high", "1024x1536")
         self.assertLess(portrait, square)
 
-    def test_unknown_combination_falls_back_to_an_upper_bound(self):
-        cost, basis = imager.cost_per_unit("gpt-image-2.5-flare", "high", "1088x1088")
+    def test_auto_size_is_priced_above_a_square(self):
+        self.assertGreater(imager.size_factor("auto")[0], 1.17)
+        self.assertEqual(imager.size_factor(None)[0], imager.AUTO_SIZE_FACTOR)
+
+    def test_a_size_beyond_the_measured_range_is_an_upper_bound(self):
+        factor, inside = imager.size_factor("3840x2160")
+        self.assertFalse(inside)
+        self.assertGreaterEqual(factor, 3840 * 2160 / (1024 * 1024))
+        _, basis = imager.cost_per_unit(imager.DEFAULT_MODEL, "high", "3840x2160")
         self.assertEqual(basis, "upper bound")
-        self.assertAlmostEqual(cost, imager.FALLBACK_COST["high"])
 
     def test_unknown_quality_does_not_under_quote(self):
-        cost, _ = imager.cost_per_unit("gpt-image-2", "ludicrous", "1024x1024")
-        self.assertGreaterEqual(cost, imager.FALLBACK_COST["high"])
+        cost, basis = imager.cost_per_unit("gpt-image-2", "ludicrous", "1024x1024")
+        self.assertGreaterEqual(cost, imager.cost_per_unit("gpt-image-2", "high", "1024x1024")[0])
+        self.assertEqual(basis, "upper bound")
+
+    def test_every_model_prices_every_tier_it_accepts(self):
+        for model, info in imager.MODELS.items():
+            for quality in info["qualities"]:
+                with self.subTest(model=model, quality=quality):
+                    self.assertIn(quality, imager.OUTPUT_TOKENS[model])
 
     def test_scales_linearly_with_n(self):
         single = imager.estimate_cost("gpt-image-2", "medium", "1024x1024", 1)
@@ -230,55 +325,48 @@ class TestCostModel(unittest.TestCase):
     def test_zero_images_costs_nothing(self):
         self.assertEqual(imager.estimate_cost("gpt-image-2", "high", "1024x1024", 0), 0.0)
 
-    def test_measured_cost_needs_three_samples(self):
-        entry = {
-            "timestamp": "2026-09-12T10:00:00",
-            "model": "gpt-image-2.5-flare",
-            "quality": "medium",
-            "size": "1024x1024",
-            "n": 1,
-            "actual_cost": 0.02,
-        }
-        imager.HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with imager.HISTORY_FILE.open("w") as f:
-            for _ in range(2):
-                f.write(json.dumps(entry) + "\n")
-        self.assertIsNone(imager.measured_cost("gpt-image-2.5-flare", "medium", "1024x1024"))
-        with imager.HISTORY_FILE.open("a") as f:
-            f.write(json.dumps(entry) + "\n")
-        self.assertAlmostEqual(imager.measured_cost("gpt-image-2.5-flare", "medium", "1024x1024"), 0.02)
+    # --- calibration from history ---
 
-    def test_measured_cost_beats_the_published_table(self):
-        entry = {
-            "timestamp": "2026-09-12T10:00:00",
-            "model": "gpt-image-2",
-            "quality": "low",
-            "size": "1024x1024",
-            "n": 1,
-            "actual_cost": 0.009,
-        }
-        imager.HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with imager.HISTORY_FILE.open("w") as f:
-            for _ in range(3):
-                f.write(json.dumps(entry) + "\n")
-        cost, basis = imager.cost_per_unit("gpt-image-2", "low", "1024x1024")
+    def test_measured_output_tokens_need_three_samples(self):
+        self.write_rows(self.run_row(900), self.run_row(900))
+        self.assertIsNone(imager.measured_output_tokens("gpt-image-2.5-flare", "medium", "1024x1024", "generation"))
+        self.write_rows(self.run_row(900))
+        self.assertEqual(imager.measured_output_tokens("gpt-image-2.5-flare", "medium", "1024x1024", "generation"), 900)
+
+    def test_a_measured_count_replaces_the_table_at_a_fixed_size(self):
+        self.write_rows(*[self.run_row(900)] * 3)
+        per, basis = imager.cost_per_unit("gpt-image-2.5-flare", "medium", "1024x1024")
         self.assertEqual(basis, "measured")
-        self.assertAlmostEqual(cost, 0.009)
+        self.assertAlmostEqual(per, 900 * self.out_rate())
 
-    def test_measured_cost_is_per_image_not_per_call(self):
-        entry = {
-            "timestamp": "2026-09-12T10:00:00",
-            "model": "gpt-image-2",
-            "quality": "low",
-            "size": "1024x1024",
-            "n": 4,
-            "actual_cost": 0.04,
-        }
-        imager.HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with imager.HISTORY_FILE.open("w") as f:
-            for _ in range(3):
-                f.write(json.dumps(entry) + "\n")
-        self.assertAlmostEqual(imager.measured_cost("gpt-image-2", "low", "1024x1024"), 0.01)
+    def test_measured_tokens_are_per_image_not_per_call(self):
+        self.write_rows(*[self.run_row(900, n=4)] * 3)
+        self.assertEqual(imager.measured_output_tokens("gpt-image-2.5-flare", "medium", "1024x1024", "generation"), 900)
+
+    def test_edits_and_generations_are_calibrated_apart(self):
+        self.write_rows(*[self.run_row(900, inputs=1)] * 3)
+        self.assertIsNone(imager.measured_output_tokens("gpt-image-2.5-flare", "medium", "1024x1024", "generation"))
+        self.assertEqual(imager.measured_output_tokens("gpt-image-2.5-flare", "medium", "1024x1024", "edit"), 900)
+
+    def test_rows_without_an_inputs_field_are_judged_by_their_usage(self):
+        row = self.run_row(900)
+        del row["inputs"]
+        row["usage"]["input_tokens_details"] = {"image_tokens": 1500, "text_tokens": 40}
+        self.write_rows(*[row] * 3)
+        self.assertEqual(imager.measured_output_tokens("gpt-image-2.5-flare", "medium", "1024x1024", "edit"), 900)
+
+    def test_the_highest_recent_sample_is_used(self):
+        self.write_rows(self.run_row(800), self.run_row(900), self.run_row(850))
+        self.assertEqual(imager.measured_output_tokens("gpt-image-2.5-flare", "medium", "1024x1024", "generation"), 900)
+
+    def test_small_runs_at_auto_cannot_pull_the_estimate_below_the_table(self):
+        # At size=auto the API chooses the size, so the count moves from run to
+        # run. Three small ones must not set the price for the next large one.
+        self.write_rows(*[self.run_row(86, size="auto", quality="low")] * 3)
+        table, _ = imager.table_output_tokens("gpt-image-2.5-flare", "low", "auto")
+        per, basis = imager.cost_per_unit("gpt-image-2.5-flare", "low", "auto")
+        self.assertNotEqual(basis, "measured")
+        self.assertAlmostEqual(per, table * self.out_rate())
 
 
 class TestCostFromUsage(unittest.TestCase):
@@ -302,7 +390,7 @@ class TestCostFromUsage(unittest.TestCase):
         self.assertAlmostEqual(imager.cost_from_usage("gpt-image-2", usage), expected)
 
     def test_empty_usage_returns_none_rather_than_zero(self):
-        # Zero would silently report a free image and poison measured_cost.
+        # Zero would silently report a free image and poison the calibration.
         self.assertIsNone(imager.cost_from_usage("gpt-image-2", {}))
 
     def test_unknown_model_returns_none(self):
@@ -1117,6 +1205,47 @@ class TestImageSize(unittest.TestCase):
         path.write_bytes(b"not an image")
         self.assertIsNone(imager.image_size(path))
         self.assertIsNone(imager.image_size(self.root / "missing.png"))
+
+
+class TestInputImagesInTheCli(IsolatedHome):
+    """Every image that goes in is counted before anything is spent."""
+
+    def test_a_dry_run_prices_the_input_images(self):
+        ref = self.root / "ref.png"
+        ref.write_bytes(tiny_png())
+        code, out, err, calls = self.generate(
+            "--dry-run", "--reference", str(ref), "a subject", str(self.root / "a.png")
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls, [])
+        self.assertIn("Inputs:    1 image", out)
+        cost = float(out.split("Est. cost: $")[1].split()[0])
+        self.assertGreaterEqual(cost, 0.015)
+
+    def test_edit_mask_and_references_all_count(self):
+        for name in ("photo.png", "mask.png", "r1.png", "r2.png"):
+            (self.root / name).write_bytes(tiny_png())
+        code, out, err, _ = self.generate(
+            "--estimate",
+            "--edit",
+            str(self.root / "photo.png"),
+            "--mask",
+            str(self.root / "mask.png"),
+            "--reference",
+            str(self.root / "r1.png"),
+            "--reference",
+            str(self.root / "r2.png"),
+            "a subject",
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("4 input images", out)
+
+    def test_the_history_row_records_how_many_images_went_in(self):
+        ref = self.root / "ref.png"
+        ref.write_bytes(tiny_png())
+        code, _, err, _ = self.generate("--reference", str(ref), "a subject", str(self.root / "a.png"))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(imager.read_history_entries()[0]["inputs"], 1)
 
 
 class TestDraftSize(IsolatedHome):

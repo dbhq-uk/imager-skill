@@ -147,6 +147,22 @@ cost = text_tokens x $5/1M + image_input_tokens x $8/1M + output_tokens x $30/1M
 A larger non-square resolution can produce fewer output tokens than a square one at the same
 quality. OpenAI publishes no equivalent table for the 2.5 models.
 
+### Output tokens measured on the 2.5 models
+
+The same tier and size returns the same output token count every time, and flare and sunburst
+return the same count as each other at `high`:
+
+| Quality | Size | Output tokens per image |
+|---------|------|-------------------------|
+| low | 1024x1024 or near it | about 200 (up to 229 at `size=auto`) |
+| high | 1024x1024 | 1,756 |
+| xhigh (sunburst) | 1536x768 | 1,628 |
+
+Across every model and tier measured, output tokens scale with size as roughly
+`sqrt(width x height) / aspect ratio`, against 1024x1024. Input images are billed at the image
+input rate, at about 640 to 1,520 tokens per image depending on its size. In measured bills they
+are counted once for every output image in the request, not once per request.
+
 ## Errors
 
 | Code | Meaning | Retry? |

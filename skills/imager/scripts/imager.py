@@ -27,7 +27,6 @@ import json
 import os
 import re
 import shutil
-import statistics
 import struct
 import subprocess
 import sys
@@ -195,30 +194,67 @@ TOKEN_PRICES = {
 # The Batch API halves every rate, and only for models flagged batch_discount.
 BATCH_DISCOUNT = 0.5
 
-# Per-image costs OpenAI publishes for gpt-image-2. There is no equivalent
-# published table for the 2.5 models, which is exactly why measured_cost()
-# exists: once a few real runs are in history.jsonl their actual cost is known
-# and the guess stops mattering.
-PUBLISHED_COST = {
+# THE ESTIMATE IS BUILT FROM TOKENS, THE WAY THE BILL IS. A request is billed
+# for its text input, its input images and its output image, each at its own
+# rate in TOKEN_PRICES. The estimate prices the same three things before the
+# request, rather than reading a per-image dollar table. The old table was
+# gpt-image-2's, and it was wrong both ways: it priced no input images, so an
+# edit or a reference run was quoted at a fraction of its bill, and it quoted
+# gpt-image-2's figures for the 2.5 models, which spend far fewer output tokens,
+# so the confirmation gate fired on money that was never going to be spent.
+
+# Output tokens per image at 1024x1024, and where each figure comes from.
+# "published": OpenAI's per-image price for gpt-image-2, divided by the output
+# rate. "calibrated": measured from real runs - the 2.5 models return the same
+# token count for a given tier and size every time, and flare and sunburst
+# return the same count as each other at high (1,756). The xhigh figure was
+# measured on sunburst. "upper bound": no measurement yet, so a figure at or
+# above anything the tier can plausibly return, until history supplies one.
+OUTPUT_TOKENS_2_5 = {
+    "low": (200, "calibrated"),
+    "medium": (1756, "upper bound"),
+    "high": (1756, "calibrated"),
+    "xhigh": (3340, "calibrated"),
+    "max": (13400, "upper bound"),
+    "auto": (3340, "upper bound"),
+}
+OUTPUT_TOKENS = {
     "gpt-image-2": {
-        "low": {"1024x1024": 0.006, "1024x1536": 0.005, "1536x1024": 0.005},
-        "medium": {"1024x1024": 0.053, "1024x1536": 0.041, "1536x1024": 0.041},
-        "high": {"1024x1024": 0.211, "1024x1536": 0.165, "1536x1024": 0.165},
-    }
+        "low": (200, "published"),
+        "medium": (1767, "published"),
+        "high": (7034, "published"),
+        "auto": (7034, "upper bound"),
+    },
+    "gpt-image-2.5-flare": OUTPUT_TOKENS_2_5,
+    "gpt-image-2.5-sunburst": OUTPUT_TOKENS_2_5,
 }
 
-# Fallback ceilings by quality tier, used when nothing better is known. These
-# are gpt-image-2's square-format figures, with xhigh and max extrapolated.
-# They are deliberately pessimistic: an estimate that under-quotes is the one
-# that does damage, because it is what lets a batch through the gate.
-FALLBACK_COST = {
-    "low": 0.006,
-    "medium": 0.053,
-    "high": 0.211,
-    "xhigh": 0.40,
-    "max": 0.80,
-    "auto": 0.211,
-}
+# Output tokens scale with size by one rule on every model and tier measured:
+# about sqrt(width x height) / aspect, against 1024x1024. So a wide image costs
+# less than a square one of the same area - 1536x960 returns 0.71x the square
+# figure and 1792x608 returns 0.34x. The rule reads 1 to 6% above every size
+# measured, which is the right side to miss on. It was measured up to about
+# 2.1 megapixels; above that the estimate scales with the pixel count instead,
+# which is pessimistic, and says "upper bound".
+CALIBRATED_PIXELS = 2_100_000
+
+# size=auto lets the API choose. It has returned up to 1.17x the square
+# figure, so auto is priced at 1.2x.
+AUTO_SIZE_FACTOR = 1.2
+
+# Input tokens per input image - the --edit image, each --reference, and the
+# mask. Measured values run from about 640 to about 1,520 per image depending
+# on its size, and they are billed once per output image, not once per request.
+INPUT_IMAGE_TOKENS = 1600
+
+# Text input tokens per character of the prompt as sent. Real prompts run at
+# about 0.22; a third is the pessimistic side of that.
+TEXT_TOKENS_PER_CHAR = 1 / 3
+
+# A measured figure replaces the table once this many runs agree on model,
+# quality, size and kind (edit or generation), so one run cannot set the price.
+MEASURED_MIN_SAMPLES = 3
+MEASURED_WINDOW = 20
 
 CONFIRM_THRESHOLD = 0.50
 
@@ -313,41 +349,111 @@ def spend_today() -> float:
     return total
 
 
-def measured_cost(model: str, quality: str, size: str) -> float | None:
-    """Median per-image cost actually billed for this exact combination.
+def run_kind(inputs: int) -> str:
+    return "edit" if inputs else "generation"
 
-    Self-calibrating, and the reason the estimate does not have to be right in
-    advance for a model whose per-image price OpenAI never published. Needs
-    three samples before it will speak, so one freak run cannot set the price.
+
+def row_kind(entry: dict) -> str:
+    """Was this history row an edit or a generation?
+
+    Rows from before `inputs` was recorded are judged by their usage block: an
+    edit or reference run bills input image tokens and a generation does not.
+    """
+    inputs = entry.get("inputs")
+    if inputs is not None:
+        try:
+            return run_kind(int(inputs))
+        except (TypeError, ValueError):
+            pass
+    details = (entry.get("usage") or {}).get("input_tokens_details") or {}
+    return run_kind(1 if details.get("image_tokens") else 0)
+
+
+def fixed_size(size: str | None) -> tuple | None:
+    """(width, height) for a WIDTHxHEIGHT size, or None for auto or no size."""
+    match = re.fullmatch(r"(\d+)x(\d+)", size or "")
+    if not match or not int(match.group(1)) or not int(match.group(2)):
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def size_factor(size: str | None) -> tuple:
+    """(output tokens against 1024x1024, is this size inside the measured range)."""
+    dims = fixed_size(size)
+    if not dims:
+        return AUTO_SIZE_FACTOR, True
+    width, height = dims
+    pixels = width * height
+    if pixels > CALIBRATED_PIXELS:
+        return pixels / (1024 * 1024), False
+    aspect = max(width, height) / min(width, height)
+    return (pixels**0.5) / aspect / 1024, True
+
+
+def measured_output_tokens(model: str, quality: str, size: str, kind: str) -> float | None:
+    """Output tokens per image that this exact combination has actually returned.
+
+    Self-calibrating, and output tokens only: the input side of a bill depends
+    on how many images went in, which is priced separately. Edits and
+    generations are kept apart. The highest of the recent samples is used, not
+    the median: at a fixed size the count does not vary, and at size=auto it
+    does, and the estimate must not come in under the bill.
     """
     samples = []
     for e in read_history_entries():
-        if e.get("model") != model or e.get("quality") != quality or e.get("size") != size:
+        if e.get("model") != model or e.get("quality") != quality or (e.get("size") or "auto") != size:
             continue
-        actual, n = e.get("actual_cost"), e.get("n") or 1
-        if actual:
-            try:
-                samples.append(float(actual) / int(n))
-            except (TypeError, ValueError, ZeroDivisionError):
-                continue
-    if len(samples) < 3:
+        usage = e.get("usage") or {}
+        if not usage.get("output_tokens") or row_kind(e) != kind:
+            continue
+        try:
+            samples.append(float(usage["output_tokens"]) / int(e.get("n") or 1))
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+    if len(samples) < MEASURED_MIN_SAMPLES:
         return None
-    return statistics.median(samples)
+    return max(samples[-MEASURED_WINDOW:])
 
 
-def cost_per_unit(model: str, quality: str, size: str) -> tuple:
-    """(cost per image, where that number came from)."""
-    measured = measured_cost(model, quality, size)
-    if measured is not None:
-        return measured, "measured"
-    published = PUBLISHED_COST.get(model, {}).get(quality, {}).get(size)
-    if published is not None:
-        return published, "published"
-    return FALLBACK_COST.get(quality, FALLBACK_COST["high"]), "upper bound"
+def table_output_tokens(model: str, quality: str, size: str) -> tuple:
+    """(output tokens per image, basis) from OUTPUT_TOKENS and the size rule."""
+    tiers = OUTPUT_TOKENS.get(model)
+    if not tiers:
+        # Not a model this file knows: the dearest figure it has.
+        tokens, basis = max(t for table in OUTPUT_TOKENS.values() for t, _ in table.values()), "upper bound"
+    elif quality in tiers:
+        tokens, basis = tiers[quality]
+    else:
+        tokens, basis = max(t for t, _ in tiers.values()), "upper bound"
+    factor, inside = size_factor(size)
+    return tokens * factor, basis if inside else "upper bound"
 
 
-def estimate_cost(model: str, quality: str, size: str, n: int) -> float:
-    return cost_per_unit(model, quality, size)[0] * n
+def cost_per_unit(model: str, quality: str, size: str, inputs: int = 0, prompt: str = "") -> tuple:
+    """(cost per output image, where the output-token figure came from).
+
+    Priced the way the bill is: text in, input images in, image out, each at
+    its own rate. `inputs` is how many images go in (edit image, references
+    and mask); each one is billed again for every output image.
+    """
+    out_tokens, basis = table_output_tokens(model, quality, size)
+    measured = measured_output_tokens(model, quality, size, run_kind(inputs))
+    # At a fixed size the measured count is exact and replaces the table. At
+    # size=auto the API picks the size per request, so the count moves, and a
+    # run of small ones must not talk the estimate below the table's figure.
+    if measured is not None and (fixed_size(size) or measured >= out_tokens):
+        out_tokens, basis = measured, "measured"
+    prices = TOKEN_PRICES.get(model) or max(TOKEN_PRICES.values(), key=lambda p: p["image_out"])
+    text_tokens = len(prompt) * TEXT_TOKENS_PER_CHAR
+    image_tokens = inputs * INPUT_IMAGE_TOKENS
+    cost = (
+        text_tokens * prices["text_in"] + image_tokens * prices["image_in"] + out_tokens * prices["image_out"]
+    ) / 1_000_000
+    return cost, basis
+
+
+def estimate_cost(model: str, quality: str, size: str, n: int, inputs: int = 0, prompt: str = "") -> float:
+    return cost_per_unit(model, quality, size, inputs, prompt)[0] * n
 
 
 def cost_from_usage(model: str, usage: dict, batch: bool = False) -> float | None:
@@ -929,6 +1035,9 @@ class HistoryEntry:
     id: str | None = None
     status: str | None = None
     duration_s: float | None = None
+    # How many images went in (edit image, references, mask). It separates
+    # edits from generations when the estimate calibrates from history.
+    inputs: int | None = None
 
 
 def append_history(entry: HistoryEntry) -> None:
@@ -1216,11 +1325,11 @@ def cmd_init():
                 f"low default on every call. Remove the line unless you meant it."
             )
 
-    print("\nRoughly, per image at 1024x1024 (gpt-image-2 published figures):")
-    print("  quality=low:    $0.006 (draft)  - fast iteration")
-    print("  quality=medium: $0.053          - good for review")
-    print("  quality=high:   $0.211          - production")
-    print("  xhigh / max:    2.5 models only, dearer again")
+    print(f"\nRoughly, per image at 1024x1024 on {DEFAULT_MODEL}:")
+    for tier, use in (("low", "draft, fast iteration"), ("high", "production"), ("xhigh", "dense text, fine detail")):
+        print(f"  quality={tier + ':':7} ${cost_per_unit(DEFAULT_MODEL, tier, '1024x1024')[0]:.3f}  - {use}")
+    per_input = INPUT_IMAGE_TOKENS * TOKEN_PRICES[DEFAULT_MODEL]["image_in"] / 1_000_000
+    print(f"  each input image (--edit, --reference, --mask) adds about ${per_input:.3f}")
     print("\n  Real cost is read back from the API's token usage after each call,")
     print("  so history.jsonl holds what was actually billed, not this table.")
 
@@ -1389,8 +1498,11 @@ def cmd_generate(args):
             )
 
     size_label = size or "auto"
-    per, basis = cost_per_unit(model, quality, size_label)
+    # Every image that goes in is billed as input, once per image that comes out.
+    inputs = (1 if args.edit else 0) + len(args.reference or []) + (1 if args.mask else 0)
+    per, basis = cost_per_unit(model, quality, size_label, inputs, prompt)
     cost = per * n
+    inputs_label = f", {inputs} input image{'s' if inputs != 1 else ''}" if inputs else ""
     mode_label = "DRAFT" if is_draft else quality.upper()
 
     if args.dry_run:
@@ -1407,6 +1519,8 @@ def cmd_generate(args):
             print(f"Background: {background}")
         print(f"N:         {n}")
         print(f"Output:    {output_path}")
+        if inputs:
+            print(f"Inputs:    {inputs} image{'s' if inputs != 1 else ''}, priced as input tokens")
         print(f"Est. cost: ${cost:.3f} ({basis})")
         return
 
@@ -1414,7 +1528,7 @@ def cmd_generate(args):
         print(
             f"Estimated cost ({mode_label}): ${cost:.3f} "
             f"({n} image{'s' if n > 1 else ''} x ~${per:.3f}/image, {model}, "
-            f"quality={quality}, size={size_label}) [{basis}]"
+            f"quality={quality}, size={size_label}{inputs_label}) [{basis}]"
         )
         if MODELS[model]["batch_discount"] and n > 1:
             print(f"  Via the Batch API that same run is ~${cost * BATCH_DISCOUNT:.3f} (50% off, {model}).")
@@ -1430,7 +1544,7 @@ def cmd_generate(args):
             file=sys.stderr,
         )
     if not no_confirm and cost >= CONFIRM_THRESHOLD:
-        print(f"Estimated cost: ${cost:.2f} ({n} x ~${per:.3f}/image, {mode_label}, {basis})")
+        print(f"Estimated cost: ${cost:.2f} ({n} x ~${per:.3f}/image, {mode_label}{inputs_label}, {basis})")
         try:
             answer = input("Proceed? [y/N] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -1471,6 +1585,7 @@ def cmd_generate(args):
         output_dir=str(output_path.resolve().parent),
         project=args.project,
         estimated_cost=cost,
+        inputs=inputs,
         actual_cost=None,
         usage=None,
         **set_fields(output_path.resolve().parent),

@@ -20,9 +20,9 @@ Generate and edit images with OpenAI's GPT Image models, through a guided flow r
 
 ## What makes it different
 
-**The draft loop is the point.** A low-quality draft costs about $0.006 against roughly $0.21 for a final, so the workflow generates a draft, shows it to you, and only spends the real money once you have said yes. Across a ten-slide carousel that is $0.06 to find the direction rather than $2.10.
+**The draft loop is the point.** A low-quality draft costs about $0.006 against about $0.053 for a high-quality final on the default model, so the workflow generates a draft, shows it to you, and only spends the real money once you have said yes. Across a ten-slide carousel that is $0.06 to find the direction rather than $0.53.
 
-**It tells you the cost before it spends it, and what it cost afterwards.** Every run estimates first. Below $0.50 it proceeds; at or above, it stops and asks. `--estimate` prices a batch without generating anything, and `--dry-run` prints the fully assembled prompt without making a request at all. Once the call returns, the token `usage` the API reports is turned into the real billed figure and logged, so the estimate stops being a guess: after three runs at the same model, quality and size, it uses their median. A tool that spends your money should never surprise you about how much.
+**It tells you the cost before it spends it, and what it cost afterwards.** Every run estimates first. Below $0.50 it proceeds; at or above, it stops and asks. `--estimate` prices a batch without generating anything, and `--dry-run` prints the fully assembled prompt without making a request at all. The estimate is built from tokens, the way the bill is: prompt text, input images and output image, each at its own rate, so an edit is priced with the images it sends. Once the call returns, the token `usage` the API reports is turned into the real billed figure and logged, and after three runs at the same model, quality, size and kind, the measured output count replaces the table. A tool that spends your money should never surprise you about how much.
 
 **It knows a directory is a set.** `set-check` reads the history for the folder you are writing into and tells you which model and quality tier the images already there were made at - then matches them unless you say otherwise. Inside git a set is the repository plus the folder's path within it, so the same folder in another worktree is the same set. This exists because a batch once went out at 35x the price it needed to, purely because a default said so.
 
@@ -119,18 +119,19 @@ $PY $GEN set-check ./assets/icons/                              # what did this 
 
 ### Prices
 
-Published `gpt-image-2` figures at 1024x1024:
+Per image at 1024x1024 on `gpt-image-2.5-flare`, the default:
 
 | Quality | Per image | Ten-slide carousel |
 |---|---|---|
 | `--draft` (low, the default) | $0.006 | $0.06 |
-| medium | $0.053 | $0.53 |
-| high | $0.211 | $2.11 |
+| high | $0.053 | $0.53 |
+| xhigh | $0.100 | $1.00 |
 
-Non-square is cheaper: at `high`, 1024x1536 and 1536x1024 are $0.165. OpenAI publishes no
-per-image table for the 2.5 models, so the estimator treats these as an upper bound for them and
-then replaces the guess with the billed figure read back from each call's token usage. The full
-workflow and CLI reference is in [`skills/imager/SKILL.md`](skills/imager/SKILL.md).
+Each input image (`--edit`, `--reference`, `--mask`) adds about $0.013 per output image.
+Non-square is cheaper. `gpt-image-2` costs more at the top: OpenAI publishes $0.211 for `high`
+at 1024x1024. The CLI replaces its estimate with the billed figure read back from each call's
+token usage. The full workflow and CLI reference is in
+[`skills/imager/SKILL.md`](skills/imager/SKILL.md).
 
 ### No seed, no thinking mode
 
