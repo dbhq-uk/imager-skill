@@ -791,6 +791,29 @@ class TestDirMatches(unittest.TestCase):
         self.assertFalse(imager.dir_matches("a/b/c/d/e", "/x/y"))
 
 
+class TestRetiredProvider(IsolatedHome):
+    def test_openrouter_in_config_is_rejected_before_anything_is_sent(self):
+        imager.ensure_config_dir()
+        imager.CONFIG_FILE.write_text("provider: openrouter\n")
+        code, _, err, calls = self.generate("a subject", str(self.root / "a.png"))
+        self.assertNotEqual(code, 0)
+        self.assertIn("OpenRouter support has been removed", err)
+        self.assertEqual(calls, [])
+
+    def test_no_doc_offers_openrouter_as_a_route(self):
+        repo = Path(__file__).resolve().parents[3]
+        docs = [
+            repo / "README.md",
+            repo / "SECURITY.md",
+            repo / "skills" / "imager" / "SKILL.md",
+            repo / "skills" / "imager" / "README.md",
+            repo / "skills" / "imager" / "references" / "api_reference.md",
+        ]
+        for doc in docs:
+            with self.subTest(doc=doc.name):
+                self.assertNotIn("openrouter", doc.read_text().lower())
+
+
 class TestDraftSize(IsolatedHome):
     def test_draft_honours_the_config_size(self):
         imager.ensure_config_dir()
@@ -996,6 +1019,18 @@ class TestCli(unittest.TestCase):
     def test_invalid_provider_is_rejected(self):
         result = run_cli("--dry-run", "--provider", "nobody", "a subject")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown provider", result.stderr)
+
+    def test_openrouter_is_rejected_with_a_reason(self):
+        # It posted to routes OpenRouter's image API does not use and would have
+        # logged a paid image as $0. Whoever still asks for it should hear why.
+        result = run_cli("--dry-run", "--provider", "openrouter", "a subject", env_extra={"OPENROUTER_API_KEY": "x"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("OpenRouter support has been removed", result.stderr)
+
+    def test_openai_is_still_accepted_by_name(self):
+        result = run_cli("--dry-run", "--provider", "openai", "a subject")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_illegal_size_is_rejected_before_the_api_call(self):
         result = run_cli("--dry-run", "--size", "1080x1080", "a subject")

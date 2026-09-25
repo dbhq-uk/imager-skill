@@ -184,14 +184,3 @@ such as `harassment`, `self-harm`, `sexual`, `violence`.
 - The Responses API exposes image generation as a built-in tool, with multi-turn editing, file
   ID inputs and `input_image_mask`. This CLI uses the Image API only.
 - Organisation verification may be required before GPT Image models are available.
-
-## OpenRouter
-
-Same request format, different base URL:
-
-- **Generation:** `POST https://openrouter.ai/api/v1/images/generations`
-- **Editing:** `POST https://openrouter.ai/api/v1/images/edits`
-- Extra headers: `HTTP-Referer`, `X-Title`
-
-Model availability and parameter support differ from OpenAI's own endpoint - check before a
-billable run.

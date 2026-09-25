@@ -5,8 +5,8 @@ A CLI wrapper around OpenAI's GPT Image models: gpt-image-2.5-flare (default),
 gpt-image-2.5-sunburst and gpt-image-2.
 
 Supports style presets, platform-aware sizing, variants, editing, masked
-inpainting, transparent backgrounds, output formats, cost controls that price
-from the API's own token usage, and OpenRouter routing.
+inpainting, transparent backgrounds, output formats, and cost controls that
+price from the API's own token usage.
 
 Usage:
     imager.py [flags] "prompt" [output.png]
@@ -138,12 +138,32 @@ PROVIDERS = {
         "edit_url": "https://api.openai.com/v1/images/edits",
         "key_env": "OPENAI_API_KEY",
     },
-    "openrouter": {
-        "url": "https://openrouter.ai/api/v1/images/generations",
-        "edit_url": "https://openrouter.ai/api/v1/images/edits",
-        "key_env": "OPENROUTER_API_KEY",
-    },
 }
+
+# Providers that were offered and are not any more. They fail with a reason
+# rather than a bare "invalid choice", for the same reason RETIRED_FLAGS does:
+# whoever still names one believes it works.
+RETIRED_PROVIDERS = {
+    "openrouter": (
+        "OpenRouter support has been removed. It posted to routes and model IDs that "
+        "OpenRouter's image API does not use, so every edit failed, and it read a usage "
+        "block OpenRouter does not return, so a paid image would have been recorded as "
+        "costing $0.\n"
+        "       Set OPENAI_API_KEY and drop --provider. If config.yaml says "
+        "provider: openrouter, remove that line."
+    ),
+}
+
+
+def check_provider(name: str) -> str:
+    """The provider to use, or a clear exit if it is retired or unknown."""
+    if name in PROVIDERS:
+        return name
+    if name in RETIRED_PROVIDERS:
+        print(f"Error: {RETIRED_PROVIDERS[name]}", file=sys.stderr)
+        sys.exit(2)
+    print(f"Error: unknown provider '{name}'. Known providers: {', '.join(PROVIDERS)}", file=sys.stderr)
+    sys.exit(1)
 
 
 def normalise_model(name: str | None) -> str:
@@ -655,9 +675,6 @@ def api_request(
             data = json.dumps(body).encode("utf-8")
             headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
             url = prov["url"]
-        if provider == "openrouter":
-            headers["HTTP-Referer"] = "https://github.com/dbhq-uk/imager-skill"
-            headers["X-Title"] = "imager-skill"
         return urllib.request.Request(url, data=data, headers=headers, method="POST")
 
     max_retries = 4
@@ -1054,7 +1071,7 @@ def cmd_list_platforms():
 
 def cmd_generate(args):
     config = load_config()
-    provider = args.provider or config.get("provider", "openai")
+    provider = check_provider(args.provider or config.get("provider", "openai"))
     api_key = get_api_key(provider)
     if not api_key:
         print(f"Error: No API key found for {provider}.", file=sys.stderr)
@@ -1469,7 +1486,7 @@ def main():
     gen_parser.add_argument("--model", help=f"Model or alias (default: {DEFAULT_MODEL})")
     gen_parser.add_argument("--preset", help="Style preset name")
     gen_parser.add_argument("--platform", help="Platform preset: sets the generation aspect, then fits down")
-    gen_parser.add_argument("--provider", choices=list(PROVIDERS.keys()), help="API provider")
+    gen_parser.add_argument("--provider", help=f"API provider ({', '.join(PROVIDERS)})")
     gen_parser.add_argument("--quality", choices=QUALITY_CHOICES, help="Image quality (xhigh/max: 2.5 models only)")
     gen_parser.add_argument("--size", help="WIDTHxHEIGHT, both multiples of 16, or 'auto'")
     gen_parser.add_argument("--n", type=int, help="Number of variants (1-10)")

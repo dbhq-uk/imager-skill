@@ -45,8 +45,7 @@ In Claude Code, just describe what you want - the skill will guide you interacti
 
 ## API Key
 
-The script reads `OPENAI_API_KEY` (or `OPENROUTER_API_KEY` if you set `--provider openrouter`)
-from the environment. Put it in your shell rc file:
+The script reads `OPENAI_API_KEY` from the environment. Put it in your shell rc file:
 
 ```bash
 echo 'export OPENAI_API_KEY=sk-...' >> ~/.bashrc
