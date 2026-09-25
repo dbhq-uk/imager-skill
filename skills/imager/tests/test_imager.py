@@ -21,6 +21,7 @@ import contextlib
 import io
 import json
 import os
+import shlex
 import shutil
 import struct
 import subprocess
@@ -1258,8 +1259,35 @@ class TestImageMagickVersions(IsolatedHome):
         self.install("convert", "montage")
         code, out, err, _ = self.run_with_path("a subject", str(self.root / "a.png"), "--n", "2")
         self.assertEqual(code, 0, err)
-        self.assertTrue((self.root / "a-contact.png").exists(), err)
+        sheets = list(imager.contact_sheet_dir().glob("a-contact-*.png"))
+        self.assertEqual(len(sheets), 1, err)
         self.assertTrue(any(c.startswith("montage ") for c in self.calls()), self.calls())
+
+    def test_the_contact_sheet_is_written_outside_the_set(self):
+        # It used to land in the set's own folder, beside the images a site ships.
+        self.install("convert", "montage")
+        code, out, err, _ = self.run_with_path("a subject", str(self.root / "a.png"), "--n", "3")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sorted(p.name for p in self.root.glob("a*.png")), ["a-01.png", "a-02.png", "a-03.png"])
+        sheet = json.loads(out.splitlines()[-1])["contact_sheet"]
+        self.assertEqual(Path(sheet).parent, imager.contact_sheet_dir().resolve())
+        self.assertTrue(Path(sheet).exists())
+
+    def test_old_contact_sheets_are_pruned(self):
+        self.install("convert", "montage")
+        folder = imager.contact_sheet_dir()
+        folder.mkdir(parents=True)
+        for i in range(3):
+            old = folder / f"old-{i}.png"
+            old.write_bytes(b"old")
+            os.utime(old, (1_000_000 + i, 1_000_000 + i))
+        with mock.patch.object(imager, "CONTACT_SHEETS_KEPT", 2):
+            code, _, err, _ = self.run_with_path("a subject", str(self.root / "a.png"), "--n", "2")
+        self.assertEqual(code, 0, err)
+        kept = sorted(p.name for p in folder.iterdir())
+        self.assertEqual(len(kept), 2)
+        self.assertIn("old-2.png", kept)
+        self.assertTrue(any(name.startswith("a-contact-") for name in kept), kept)
 
     def test_magick_is_used_when_present(self):
         self.install("magick", "convert", "montage")
@@ -1319,6 +1347,168 @@ class TestImageSize(unittest.TestCase):
         path.write_bytes(b"not an image")
         self.assertIsNone(imager.image_size(path))
         self.assertIsNone(imager.image_size(self.root / "missing.png"))
+
+
+# A stand-in for a preview helper. It logs the arguments it was given, one JSON
+# list per call, and prints a URL built from {name}, the way a helper that
+# serves files would.
+STUB_PREVIEW = """import json, sys
+with open({log!r}, "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\\n")
+if {fail!r}:
+    sys.stderr.write("preview server is down\\n")
+    sys.exit(1)
+print("copied", sys.argv[1])
+print("http://preview.test/" + sys.argv[2])
+"""
+
+
+class TestPreviewCommand(IsolatedHome):
+    """preview_command in config.yaml runs once per saved file, and a run ends with one JSON line."""
+
+    def configure(self, command: str | None = None, fail: bool = False) -> None:
+        self.log = self.root / "preview.log"
+        stub = self.root / "stub_preview.py"
+        stub.write_text(STUB_PREVIEW.format(log=str(self.log), fail=fail))
+        if command is None:
+            command = f"{shlex.quote(sys.executable)} {shlex.quote(str(stub))} {{path}} {{name}}"
+        imager.ensure_config_dir()
+        imager.CONFIG_FILE.write_text(f"preview_command: {json.dumps(command)}\n")
+
+    def preview_calls(self) -> list:
+        if not self.log.exists():
+            return []
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def last_json(self, out: str) -> dict:
+        return json.loads(out.strip().splitlines()[-1])
+
+    def test_it_runs_once_per_saved_image_with_a_unique_name(self):
+        self.configure()
+        with mock.patch.object(imager, "make_contact_sheet", return_value=False):
+            code, out, err, _ = self.generate("--n", "2", "a subject", str(self.root / "a.png"))
+        self.assertEqual(code, 0, err)
+        calls = self.preview_calls()
+        self.assertEqual([c[0] for c in calls], [str(self.root / "a-01.png"), str(self.root / "a-02.png")])
+        names = [c[1] for c in calls]
+        self.assertEqual(len(set(names)), 2)
+        for name in names:
+            self.assertRegex(name, r"^a-0[12]-\d{8}-\d{6}-[0-9a-f]{6}\.png$")
+        self.assertIn(f"Preview: http://preview.test/{names[0]}", out)
+
+    def test_the_same_output_twice_gets_two_names(self):
+        # A helper that stores files by basename made every out.png replace
+        # the one before it.
+        self.configure()
+        for _ in range(2):
+            code, _, err, _ = self.generate("--overwrite", "a subject", str(self.root / "out.png"))
+            self.assertEqual(code, 0, err)
+        calls = self.preview_calls()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0], calls[1][0])
+        self.assertNotEqual(calls[0][1], calls[1][1])
+        self.assertNotEqual(calls[0][1], "out.png")
+
+    def test_the_last_line_is_json_with_paths_cost_and_preview_url(self):
+        self.configure()
+        usage = {
+            "input_tokens": 20,
+            "output_tokens": 196,
+            "input_tokens_details": {"text_tokens": 20, "image_tokens": 0},
+        }
+        code, out, err, _ = self.generate("a subject", str(self.root / "a.png"), usage=usage)
+        self.assertEqual(code, 0, err)
+        result = self.last_json(out)
+        path = str(self.root / "a.png")
+        self.assertEqual(result["schema"], "imager.result/v1")
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["paths"], [path])
+        self.assertIsNone(result["contact_sheet"])
+        self.assertEqual(result["cost_source"], "billed")
+        self.assertAlmostEqual(result["cost"], imager.cost_from_usage(imager.DEFAULT_MODEL, usage), places=6)
+        name = self.preview_calls()[0][1]
+        self.assertEqual(result["preview_urls"], {path: f"http://preview.test/{name}"})
+
+    def test_the_contact_sheet_is_previewed_too(self):
+        self.configure()
+        sheet_dir = imager.contact_sheet_dir()
+
+        def fake_sheet(images, output, cols=3):
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(tiny_png())
+            return True
+
+        with mock.patch.object(imager, "make_contact_sheet", side_effect=fake_sheet):
+            code, out, err, _ = self.generate("--n", "2", "a subject", str(self.root / "a.png"))
+        self.assertEqual(code, 0, err)
+        calls = self.preview_calls()
+        self.assertEqual(len(calls), 3)
+        sheet = Path(calls[2][0])
+        self.assertEqual(sheet.parent, sheet_dir.resolve())
+        self.assertEqual(calls[2][1], sheet.name)
+        result = self.last_json(out)
+        self.assertEqual(result["contact_sheet"], str(sheet))
+        self.assertEqual(len(result["preview_urls"]), 3)
+
+    def test_with_no_preview_command_nothing_runs_and_the_line_is_still_printed(self):
+        code, out, err, _ = self.generate("a subject", str(self.root / "a.png"))
+        self.assertEqual(code, 0, err)
+        result = self.last_json(out)
+        self.assertEqual(result["preview_urls"], {})
+        self.assertEqual(result["paths"], [str(self.root / "a.png")])
+        self.assertEqual(result["cost_source"], "estimate")
+
+    def test_a_failing_preview_is_a_warning_and_the_image_is_kept(self):
+        self.configure(fail=True)
+        code, out, err, _ = self.generate("a subject", str(self.root / "a.png"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("preview_command exited 1", err)
+        self.assertIn("preview server is down", err)
+        self.assertTrue((self.root / "a.png").exists())
+        self.assertEqual(self.last_json(out)["preview_urls"], {str(self.root / "a.png"): None})
+
+    def test_a_command_without_path_stops_before_anything_is_sent(self):
+        self.configure(command="preview.sh {name}")
+        code, _, err, calls = self.generate("a subject", str(self.root / "a.png"))
+        self.assertEqual(code, 1)
+        self.assertIn("{path}", err)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.history_rows(), [])
+
+    def test_a_file_name_is_passed_as_one_argument_never_as_shell(self):
+        self.configure()
+        odd = self.root / "a $(touch pwned) b.png"
+        code, _, err, _ = self.generate("a subject", str(odd))
+        self.assertEqual(code, 0, err)
+        path, name = self.preview_calls()[0]
+        self.assertEqual(path, str(odd))
+        self.assertRegex(name, r"^[A-Za-z0-9._-]+$")
+        self.assertFalse((self.root / "pwned").exists())
+        self.assertFalse(Path("pwned").exists())
+
+    def test_a_batch_previews_every_image_and_ends_with_one_json_line(self):
+        self.configure()
+        rows = [{"prompt": f"subject {i}", "output": str(self.root / "set" / f"{i}.png")} for i in range(3)]
+        batch = self.root / "runs.jsonl"
+        batch.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        code, out, err, _ = self.generate("batch", str(batch), "-y")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(self.preview_calls()), 3)
+        result = self.last_json(out)
+        self.assertEqual(result["paths"], [row["output"] for row in rows])
+        self.assertEqual(result["generated"], 3)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(len(result["preview_urls"]), 3)
+        code, out, err, _ = self.generate("batch", str(batch), "-y")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.last_json(out)["skipped"], 3)
+
+    def test_skill_md_points_at_the_result_line_not_a_repository_script(self):
+        text = (Path(__file__).parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        step5 = text.split("### Step 5")[1].split("\n## ")[0]
+        self.assertIn("preview_command", step5)
+        self.assertIn("preview_urls", step5)
+        self.assertNotIn("preview script", step5)
 
 
 class TestInputImagesInTheCli(IsolatedHome):

@@ -27,6 +27,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -658,7 +659,7 @@ def parse_config(text: str, source: str = "config.yaml") -> dict[str, Any]:
     """config.yaml, read without PyYAML.
 
     The file has only ever held flat `key: value` lines - provider, model,
-    quality, size, daily_cap - so this reads exactly that subset: comments,
+    quality, size, daily_cap, preview_command - so this reads exactly that subset: comments,
     quoted and plain strings, numbers, true/false and null. Anything nested is
     refused with the line number rather than guessed at.
     """
@@ -765,12 +766,55 @@ def save_image(b64_data: str, output_path: Path, overwrite: bool = False) -> Non
         f.write(base64.b64decode(b64_data))
 
 
-def output_paths(output_path: Path, count: int) -> tuple:
-    """(image paths, contact sheet path or None) that a run of `count` images writes."""
+def output_paths(output_path: Path, count: int) -> list:
+    """The image paths a run of `count` images writes. The contact sheet is not one of them."""
     if count <= 1:
-        return [output_path], None
+        return [output_path]
     stem, suffix, parent = output_path.stem, output_path.suffix, output_path.parent
-    return [parent / f"{stem}-{i:02d}{suffix}" for i in range(1, count + 1)], parent / f"{stem}-contact{suffix}"
+    return [parent / f"{stem}-{i:02d}{suffix}" for i in range(1, count + 1)]
+
+
+def unique_name(path: Path, run_id: str) -> str:
+    """A file name for `path` that no other run produces: its stem, the time and part of the run's id.
+
+    A preview helper that stores files by basename made every out.png replace
+    the one before it, so the name handed to preview_command is never the bare
+    basename. It is also safe as a URL path and a shell word.
+    """
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", path.stem).strip("-.") or "image"
+    return f"{stem}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{run_id[:6]}{path.suffix}"
+
+
+# Contact sheets are a review aid, not part of the set, so they are written
+# under the settings directory rather than beside the images. They used to land
+# in the set's own folder, where they mixed with the images a site ships.
+CONTACT_SHEETS_KEPT = 50
+
+
+def contact_sheet_dir() -> Path:
+    return CONFIG_DIR / "contact-sheets"
+
+
+def contact_sheet_path(output_path: Path, run_id: str) -> Path:
+    return contact_sheet_dir() / unique_name(
+        output_path.with_name(f"{output_path.stem}-contact{output_path.suffix}"), run_id
+    )
+
+
+def prune_contact_sheets(keep: int | None = None) -> None:
+    """Keep the newest contact sheets and delete the rest, so the folder cannot grow without end."""
+    keep = CONTACT_SHEETS_KEPT if keep is None else keep
+    try:
+        sheets = sorted(
+            (p for p in contact_sheet_dir().iterdir() if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+    except OSError:
+        return
+    for old in sheets[keep:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
 
 
 def free_output_path(output_path: Path, count: int) -> Path:
@@ -783,8 +827,7 @@ def free_output_path(output_path: Path, count: int) -> Path:
     """
     candidate, k = output_path, 1
     while True:
-        paths, contact = output_paths(candidate, count)
-        if not any(p.exists() for p in [*paths, contact] if p):
+        if not any(p.exists() for p in output_paths(candidate, count)):
             return candidate
         k += 1
         candidate = output_path.with_name(f"{output_path.stem}-{k}{output_path.suffix}")
@@ -905,9 +948,101 @@ def make_contact_sheet(images: list, output: Path, cols: int = 3) -> bool:
             file=sys.stderr,
         )
         return False
+    ensure_config_dir()
+    output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     return run_imagemagick(
         [*command, *[str(p) for p in images], "-geometry", "+4+4", "-tile", f"{cols}x", str(output)],
         "contact sheet",
+    )
+
+
+# ---------- Preview ----------
+
+# PREVIEW IS CONFIGURED, NOT GUESSED. SKILL.md used to ask the agent to find a
+# preview script in whatever repository it was in and run it from the right
+# directory. Now `preview_command` in config.yaml names the command and the CLI
+# runs it once per saved file, with {path} the file and {name} a name no other
+# run produces. There is no default: with the key unset, nothing runs.
+PREVIEW_TIMEOUT = 60
+
+
+def preview_template(config: dict) -> list | None:
+    """preview_command from config.yaml, split into arguments, or None when it is not set.
+
+    Checked before anything is priced or sent, so a mistake in it costs nothing.
+    It is split the way a shell would split it and then run WITHOUT a shell,
+    with the placeholders filled in per argument, so a file name can never be
+    read as shell syntax.
+    """
+    raw = config.get("preview_command")
+    if raw is None or raw == "":
+        return None
+    where = f"preview_command in {CONFIG_FILE}"
+    if not isinstance(raw, str):
+        print(f"Error: {where} must be a command, for example: preview.sh {{path}} {{name}}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        argv = shlex.split(raw)
+    except ValueError as e:
+        print(f"Error: {where} cannot be split into arguments ({e}).", file=sys.stderr)
+        sys.exit(1)
+    if not any("{path}" in arg for arg in argv):
+        print(f"Error: {where} must include {{path}}, the file to preview. It may also use {{name}}.", file=sys.stderr)
+        sys.exit(1)
+    return [os.path.expanduser(arg) for arg in argv]
+
+
+def run_preview(template: list, path: Path, name: str) -> str | None:
+    """Run the preview command for one file. Returns the last line it printed, or None.
+
+    A preview that fails is a warning: the image is already paid for and saved.
+    """
+    argv = [arg.replace("{path}", str(path)).replace("{name}", name) for arg in template]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=PREVIEW_TIMEOUT, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        print(f"Warning: preview_command took over {PREVIEW_TIMEOUT}s on {path}, so it was stopped.", file=sys.stderr)
+        return None
+    except OSError as e:
+        print(f"Warning: preview_command could not run on {path}: {e}", file=sys.stderr)
+        return None
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip().splitlines()
+        print(
+            f"Warning: preview_command exited {result.returncode} on {path}.{' ' + detail[-1] if detail else ''}",
+            file=sys.stderr,
+        )
+        return None
+    lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
+# ---------- Result line ----------
+
+# The last line of stdout from any run that sends a request is one JSON object,
+# so an agent reads paths and cost from it rather than scraping prose. Add
+# fields; never rename or remove one, because a script may be reading it.
+RESULT_SCHEMA = "imager.result/v1"
+
+
+def result_line(results: list, **extra) -> str:
+    """The closing JSON line for a run: saved paths, contact sheet, cost and preview URLs."""
+    billed = all(r["actual"] is not None for r in results)
+    cost = sum(r["actual"] if r["actual"] is not None else r["estimated"] for r in results)
+    previews: dict = {}
+    for r in results:
+        previews.update(r["previews"])
+    contact = next((r["contact_sheet"] for r in results if r.get("contact_sheet")), None)
+    return json.dumps(
+        {
+            "schema": RESULT_SCHEMA,
+            "paths": [str(Path(p).resolve()) for r in results for p in r["paths"]],
+            "contact_sheet": str(contact) if contact else None,
+            "cost": round(cost, 6),
+            "cost_source": "billed" if billed else "estimate",
+            "preview_urls": previews,
+            **extra,
+        }
     )
 
 
@@ -1534,6 +1669,8 @@ class Job:
     inputs: int
     per: float = 0.0
     basis: str = ""
+    # preview_command from config.yaml, already split and checked, or None.
+    preview: list | None = None
 
     @property
     def size_label(self) -> str:
@@ -1743,7 +1880,8 @@ def run_request(job: Job, api_key: str) -> dict:
     # count from the one asked for, and the request can take minutes.
     if not job.overwrite:
         output_path = free_output_path(job.requested_path, len(images))
-    paths, contact = output_paths(output_path, len(images))
+    paths = output_paths(output_path, len(images))
+    contact = contact_sheet_path(output_path, pending.id) if len(paths) > 1 else None
     saved_paths = []
     for img_data, p in zip(images, paths):
         save_image(img_data, p, overwrite=job.overwrite)
@@ -1773,6 +1911,9 @@ def run_request(job: Job, api_key: str) -> dict:
 
     if contact and make_contact_sheet(saved_paths, contact) and contact.exists():
         print(f"Saved {contact} (contact sheet)")
+        prune_contact_sheets()
+    else:
+        contact = None
 
     if job.platform_spec:
         target_w, target_h = job.platform_spec["width"], job.platform_spec["height"]
@@ -1790,7 +1931,23 @@ def run_request(job: Job, api_key: str) -> dict:
                 saved = f"{dims[0]}x{dims[1]}" if dims else f"{job.size_label} as generated"
                 print(f"  Not fitted to {target_w}x{target_h} ({job.platform}): {p} is {saved}")
 
-    return {"paths": saved_paths, "estimated": estimated, "actual": actual}
+    # Last, so the file previewed is the fitted one.
+    previews: dict = {}
+    if job.preview:
+        for p in [*saved_paths, *([contact] if contact else [])]:
+            name = contact.name if p == contact else unique_name(p, pending.id)
+            url = run_preview(job.preview, p.resolve(), name)
+            previews[str(p.resolve())] = url
+            if url:
+                print(f"  Preview: {url}")
+
+    return {
+        "paths": saved_paths,
+        "contact_sheet": contact.resolve() if contact else None,
+        "previews": previews,
+        "estimated": estimated,
+        "actual": actual,
+    }
 
 
 def report_billed(result: dict) -> None:
@@ -1839,6 +1996,7 @@ def cmd_generate(args):
     provider = check_provider(args.provider or config.get("provider", "openai"))
     api_key = require_api_key(provider)
     refuse_missing_inputs(args.edit, args.reference, args.mask)
+    preview = preview_template(config)
 
     model = normalise_model(args.model or config.get("model"))
     prompt = compose_prompt(args.prompt, args.preset)
@@ -2001,8 +2159,11 @@ def cmd_generate(args):
         inputs=inputs,
         per=per,
         basis=basis,
+        preview=preview,
     )
-    report_billed(run_request(job, api_key))
+    result = run_request(job, api_key)
+    report_billed(result)
+    print(result_line([result], status="complete"))
 
 
 # ---------- Again ----------
@@ -2173,6 +2334,7 @@ def cmd_batch(args):
     provider = check_provider(config.get("provider", "openai"))
     api_key = require_api_key(provider)
     rows = load_batch(args.file)
+    preview = preview_template(config)
     model = normalise_model(args.model or config.get("model"))
     quality = args.quality or config.get("quality", "low")
     check_quality(model, quality)
@@ -2217,6 +2379,7 @@ def cmd_batch(args):
                 overwrite=False,
                 sidecar=False,
                 inputs=input_count(row.get("edit"), row.get("reference"), row.get("mask")),
+                preview=preview,
             )
         )
 
@@ -2245,6 +2408,7 @@ def cmd_batch(args):
         print(f"Skipping {len(skipped)} row(s) whose output already exists.")
     if not jobs:
         print("Nothing to do: every output in the batch already exists.")
+        print(result_line([], status="complete", generated=0, skipped=len(skipped), failed=0, not_started=0))
         return
     if args.dry_run:
         for directory, group in by_dir.items():
@@ -2271,6 +2435,10 @@ def cmd_batch(args):
     print(f"Running {len(jobs)} image(s), {concurrency} at a time...", file=sys.stderr)
     lock = threading.Lock()
     state = {"done": 0, "failed": 0, "in_a_row": 0, "billed": 0.0, "estimated": 0.0, "stopped": False}
+    # Collected with each job's place in the file, so the result line lists
+    # paths in file order rather than the order the threads finished in.
+    results: list = []
+    position = {id(job): i for i, job in enumerate(jobs)}
 
     def work(job: Job) -> None:
         with lock:
@@ -2297,6 +2465,7 @@ def cmd_batch(args):
                     )
             return
         with lock:
+            results.append((position[id(job)], result))
             state["done"] += 1
             state["in_a_row"] = 0
             state["estimated"] += result["estimated"]
@@ -2310,6 +2479,16 @@ def cmd_batch(args):
         f"Batch finished: {state['done']} generated, {len(skipped)} skipped (already existed), "
         f"{state['failed']} failed{f', {not_run} not started' if not_run else ''}. "
         f"Billed ${state['billed']:.4f} (estimated ${state['estimated']:.4f})."
+    )
+    print(
+        result_line(
+            [result for _, result in sorted(results, key=lambda pair: pair[0])],
+            status="partial" if state["failed"] or not_run else "complete",
+            generated=state["done"],
+            skipped=len(skipped),
+            failed=state["failed"],
+            not_started=not_run,
+        )
     )
     if state["failed"] or not_run:
         sys.exit(1)
