@@ -77,18 +77,22 @@ class IsolatedHome(unittest.TestCase):
         (imager.CONFIG_DIR, imager.CONFIG_FILE, imager.HISTORY_FILE, imager.LAST_RUN_FILE) = self._saved
         self.tmp.cleanup()
 
-    def generate(self, *argv: str, png: bytes | None = None, usage: dict | None = None):
+    def generate(self, *argv: str, png: bytes | None = None, usage: dict | None = None, during=None):
         """Run the real CLI in-process with the API replaced by a fake.
 
         Returns (exit code, stdout, stderr, the keyword arguments the fake
         received). Nothing leaves the machine: api_request is the only function
-        that calls out, and it is the thing replaced.
+        that calls out, and it is the thing replaced. `during`, if given, runs
+        inside the fake request - to look at the history mid-flight, or to
+        raise the way a killed or refused request would.
         """
         calls: list = []
         image = base64.b64encode(png or tiny_png()).decode()
 
         def fake_api_request(**kwargs):
             calls.append(kwargs)
+            if during:
+                during()
             return [image] * kwargs.get("n", 1), (usage if usage is not None else {})
 
         out, err, code = io.StringIO(), io.StringIO(), 0
@@ -881,6 +885,121 @@ class TestRetiredProvider(IsolatedHome):
         for doc in docs:
             with self.subTest(doc=doc.name):
                 self.assertNotIn("openrouter", doc.read_text().lower())
+
+
+class TestWriteAheadLedger(IsolatedHome):
+    """A row exists for every request sent, whatever happens after it is sent."""
+
+    USAGE = {"input_tokens": 20, "output_tokens": 229, "input_tokens_details": {"text_tokens": 20, "image_tokens": 0}}
+
+    def today(self) -> str:
+        return imager.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+    def write_lines(self, *lines: str) -> None:
+        imager.HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        imager.HISTORY_FILE.write_text("".join(line + "\n" for line in lines))
+
+    def test_a_corrupt_middle_line_does_not_hide_the_rows_after_it(self):
+        self.write_lines(
+            json.dumps({"timestamp": self.today(), "actual_cost": 1.0}),
+            '{"timestamp": "torn mid-wri',
+            json.dumps({"timestamp": self.today(), "actual_cost": 4.0}),
+        )
+        self.assertAlmostEqual(imager.spend_today(), 5.0)
+        self.assertEqual(len(imager.read_history_entries()), 2)
+
+    def test_the_request_is_counted_in_todays_spend_while_it_is_in_flight(self):
+        seen: list = []
+        code, _, err, _ = self.generate(
+            "a subject", str(self.root / "a.png"), usage=self.USAGE, during=lambda: seen.append(imager.spend_today())
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(seen), 1)
+        self.assertGreater(seen[0], 0.0)
+
+    def test_a_killed_run_leaves_a_pending_row_that_counts_today(self):
+        def killed():
+            raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            self.generate("a subject", str(self.root / "a.png"), during=killed)
+        rows = imager.read_history_entries()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "pending")
+        self.assertGreater(rows[0]["estimated_cost"], 0.0)
+        self.assertAlmostEqual(imager.spend_today(), rows[0]["estimated_cost"])
+
+    def test_the_final_row_replaces_the_pending_row(self):
+        code, _, err, _ = self.generate("a subject", str(self.root / "a.png"), usage=self.USAGE)
+        self.assertEqual(code, 0, err)
+        # Two lines on disk, one request read back, counted once at the billed figure.
+        self.assertEqual(len(self.history_rows()), 2)
+        rows = imager.read_history_entries()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "complete")
+        billed = imager.cost_from_usage(imager.DEFAULT_MODEL, self.USAGE)
+        self.assertAlmostEqual(rows[0]["actual_cost"], billed)
+        self.assertAlmostEqual(imager.spend_today(), billed)
+        self.assertIsNotNone(rows[0]["duration_s"])
+
+    def test_a_refused_request_is_recorded_as_failed_and_costs_nothing(self):
+        def refused():
+            sys.exit(1)
+
+        code, _, _, _ = self.generate("a subject", str(self.root / "a.png"), during=refused)
+        self.assertEqual(code, 1)
+        rows = imager.read_history_entries()
+        self.assertEqual([r["status"] for r in rows], ["failed"])
+        self.assertEqual(imager.spend_today(), 0.0)
+
+    def test_an_imagemagick_failure_keeps_the_record_and_the_run(self):
+        real_run = subprocess.run
+
+        def magick_fails(cmd, *a, **kw):
+            if cmd and cmd[0] == "magick":
+                raise subprocess.CalledProcessError(1, cmd, stderr=b"magick: no decode delegate")
+            return real_run(cmd, *a, **kw)
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(imager.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"))
+            stack.enter_context(mock.patch.object(imager.subprocess, "run", side_effect=magick_fails))
+            code, out, err, _ = self.generate(
+                "a subject", str(self.root / "a.png"), "--platform", "story", usage=self.USAGE
+            )
+        self.assertEqual(code, 0, err)
+        self.assertIn("ImageMagick failed", err)
+        self.assertNotIn("Fitted to", out)
+        rows = imager.read_history_entries()
+        self.assertEqual([r["status"] for r in rows], ["complete"])
+        self.assertIsNotNone(rows[0]["actual_cost"])
+
+    def test_a_pending_row_is_not_an_image_in_the_set(self):
+        images = self.root / "set"
+        images.mkdir()
+        self.write_lines(
+            json.dumps(
+                {
+                    "timestamp": self.today(),
+                    "model": "gpt-image-2",
+                    "quality": "high",
+                    "n": 1,
+                    "output": str(images / "a.png"),
+                    "output_dir": str(images),
+                    "id": "abc",
+                    "status": "pending",
+                }
+            )
+        )
+        self.assertEqual(imager.set_profile(images / "b.png")["count"], 0)
+
+    def test_history_names_a_pending_row(self):
+        self.write_lines(
+            json.dumps({"timestamp": self.today(), "prompt": "cut off", "estimated_cost": 0.05, "status": "pending"})
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            imager.cmd_history(argparse.Namespace(n=10, history_project=None))
+        self.assertIn("pending", out.getvalue())
 
 
 class TestDraftSize(IsolatedHome):

@@ -33,7 +33,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
+import uuid
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -246,24 +247,66 @@ def entry_cost(entry: dict) -> float:
 
 
 def read_history_entries() -> list:
-    """Every history row, or as many as parse cleanly."""
+    """Every history row that parses, one per request.
+
+    A run writes two rows with the same id: a pending row before the request
+    and a final one after it (see append_history). The final row takes the
+    pending row's place here, so a request is never counted twice. A row with
+    no final row is a request whose outcome was never recorded - the process
+    was killed, or timed out - and it stays, because it may have been billed.
+
+    A line that does not parse is skipped. It used to end the read, so one
+    torn or hand-edited line hid every row after it from the daily total, the
+    cost calibration and set-check.
+    """
     if not HISTORY_FILE.exists():
         return []
-    rows: list = []
     try:
-        for line in HISTORY_FILE.read_text().splitlines():
-            if not line.strip():
-                continue
-            rows.append(json.loads(line))
-    except Exception:  # noqa: BLE001
-        return rows
+        text = HISTORY_FILE.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    rows: list = []
+    position: dict = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        run_id = row.get("id")
+        if run_id and run_id in position:
+            rows[position[run_id]] = row
+            continue
+        if run_id:
+            position[run_id] = len(rows)
+        rows.append(row)
     return rows
 
 
+def images_saved(entry: dict) -> bool:
+    """Did this row's request produce images on disk?
+
+    Rows written before the status field existed were only ever written after
+    the images were saved, so no status means yes.
+    """
+    return entry.get("status") in (None, "complete")
+
+
 def spend_today() -> float:
-    """What has already been spent through this skill today, from history.jsonl."""
+    """What has already been spent through this skill today, from history.jsonl.
+
+    A pending row counts at its estimate: a request that was sent and never
+    recorded may still have been billed, and an under-count is the direction
+    that does damage. A failed row counts as nothing - the API returned an
+    error, not an image.
+    """
     today, total = datetime.now().strftime("%Y-%m-%d"), 0.0
     for e in read_history_entries():
+        if e.get("status") == "failed":
+            continue
         if str(e.get("timestamp", "")).startswith(today):
             total += entry_cost(e)
     return total
@@ -527,11 +570,32 @@ def free_output_path(output_path: Path, count: int) -> Path:
         candidate = output_path.with_name(f"{output_path.stem}-{k}{output_path.suffix}")
 
 
-def platform_fit(image_path: Path, width: int, height: int) -> None:
+def run_imagemagick(command: list, what: str) -> bool:
+    """Run one ImageMagick step. A failure is a warning, never a crash.
+
+    Post-processing runs on images that are already paid for and saved. It used
+    to run with check=True before the history row was written, so an
+    ImageMagick error lost the record of a billed image.
+    """
+    try:
+        subprocess.run(command, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, OSError) as e:
+        detail = ""
+        if isinstance(e, subprocess.CalledProcessError) and e.stderr:
+            detail = " " + e.stderr.decode("utf-8", errors="replace").strip().splitlines()[-1]
+        elif isinstance(e, OSError):
+            detail = f" {e}"
+        print(f"Warning: ImageMagick failed on the {what}, so it was skipped.{detail}", file=sys.stderr)
+        return False
+    return True
+
+
+def platform_fit(image_path: Path, width: int, height: int) -> bool:
+    """Scale and centre-crop to the platform size. True if the file was fitted."""
     if not shutil.which("magick"):
         print("Warning: ImageMagick not found, skipping platform resize", file=sys.stderr)
-        return
-    subprocess.run(
+        return False
+    return run_imagemagick(
         [
             "magick",
             str(image_path),
@@ -543,19 +607,18 @@ def platform_fit(image_path: Path, width: int, height: int) -> None:
             f"{width}x{height}",
             str(image_path),
         ],
-        check=True,
-        capture_output=True,
+        "platform resize",
     )
 
 
-def make_contact_sheet(images: list, output: Path, cols: int = 3) -> None:
+def make_contact_sheet(images: list, output: Path, cols: int = 3) -> bool:
+    """Tile the images into one sheet. True if the sheet was written."""
     if not shutil.which("magick"):
         print("Warning: ImageMagick not found, skipping contact sheet", file=sys.stderr)
-        return
-    subprocess.run(
+        return False
+    return run_imagemagick(
         ["magick", "montage"] + [str(p) for p in images] + ["-geometry", "+4+4", "-tile", f"{cols}x", str(output)],
-        check=True,
-        capture_output=True,
+        "contact sheet",
     )
 
 
@@ -572,8 +635,6 @@ MIME_TYPES = {
 
 def _build_multipart(fields: list) -> tuple:
     """Build multipart/form-data body. Each field is (name, value, filename_or_None)."""
-    import uuid
-
     boundary = uuid.uuid4().hex
     lines: list = []
     for name, value, filename in fields:
@@ -792,14 +853,38 @@ class HistoryEntry:
     # directory relative to its top level. Null outside git. See set_key.
     repo: str | None = None
     repo_dir: str | None = None
+    # The write-ahead record. `id` ties a request's pending row to its final
+    # row; `status` is pending (sent, outcome not yet known), complete or
+    # failed. Rows from before 25 Sep 2026 have neither and are complete.
+    id: str | None = None
+    status: str | None = None
+    duration_s: float | None = None
+
+
+def append_history(entry: HistoryEntry) -> None:
+    """Append one row to history.jsonl, as a single write.
+
+    O_APPEND and one os.write per row, so rows from runs going at the same
+    time land whole rather than interleaved.
+    """
+    ensure_config_dir()
+    line = (json.dumps(asdict(entry)) + "\n").encode("utf-8")
+    fd = os.open(HISTORY_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, line)
+    finally:
+        os.close(fd)
+
+
+def save_last_run(entry: HistoryEntry) -> None:
+    ensure_config_dir()
+    with LAST_RUN_FILE.open("w") as f:
+        json.dump(asdict(entry), f, indent=2)
 
 
 def save_history(entry: HistoryEntry) -> None:
-    ensure_config_dir()
-    with HISTORY_FILE.open("a") as f:
-        f.write(json.dumps(asdict(entry)) + "\n")
-    with LAST_RUN_FILE.open("w") as f:
-        json.dump(asdict(entry), f, indent=2)
+    append_history(entry)
+    save_last_run(entry)
 
 
 def load_history(n: int = 20, project: str | None = None) -> list:
@@ -972,6 +1057,9 @@ def set_profile(output_path) -> dict:
     models: dict = {}
     count = 0
     for e in read_history_entries():
+        # A pending or failed row has no image in the set to match.
+        if not images_saved(e):
+            continue
         same_set = bool(target_key) and _row_key(e, target_path.name, cache) == target_key
         if not same_set:
             where = entry_dir(e)
@@ -1285,26 +1373,64 @@ def cmd_generate(args):
         file=sys.stderr,
     )
 
-    images, usage = api_request(
-        prompt=prompt,
-        provider=provider,
-        api_key=api_key,
+    # WRITE-AHEAD. The row goes down before the request is sent, at the
+    # estimate, and the final row replaces it once the images are saved. A
+    # request can take minutes and an agent's shell can kill it on a timeout;
+    # a record written only at the end loses every run that never reached the
+    # end, and some of those were billed. Absolute paths, always: a relative
+    # "." recorded from one directory would match every other directory the
+    # CLI is later run from, and set_profile would hand back some unrelated
+    # folder's house tier.
+    started = time.monotonic()
+    pending = HistoryEntry(
+        timestamp=datetime.now().isoformat(),
+        prompt=args.prompt,
+        preset=args.preset,
+        platform=platform,
         model=model,
-        size=size,
         quality=quality,
-        n=n,
-        edit_image=args.edit,
-        reference_images=args.reference,
-        mask=args.mask,
+        size=size_label,
         background=background,
         output_format=output_format,
-        output_compression=args.output_compression,
-        moderation=args.moderation,
+        provider=provider,
+        n=n,
+        output=str(output_path.resolve()),
+        output_dir=str(output_path.resolve().parent),
+        project=args.project,
+        estimated_cost=cost,
+        actual_cost=None,
+        usage=None,
+        **set_fields(output_path.resolve().parent),
+        id=uuid.uuid4().hex,
+        status="pending",
     )
+    append_history(pending)
 
-    if not images:
-        print("Error: No images returned.", file=sys.stderr)
-        sys.exit(1)
+    try:
+        images, usage = api_request(
+            prompt=prompt,
+            provider=provider,
+            api_key=api_key,
+            model=model,
+            size=size,
+            quality=quality,
+            n=n,
+            edit_image=args.edit,
+            reference_images=args.reference,
+            mask=args.mask,
+            background=background,
+            output_format=output_format,
+            output_compression=args.output_compression,
+            moderation=args.moderation,
+        )
+        if not images:
+            print("Error: No images returned.", file=sys.stderr)
+            sys.exit(1)
+    except SystemExit:
+        # The API answered with an error, or with nothing. Recorded as failed,
+        # so the day's total does not carry an image that never came back.
+        append_history(replace(pending, status="failed", duration_s=round(time.monotonic() - started, 1)))
+        raise
 
     # Checked again now the images are here: the API can return a different
     # count from the one asked for, and the request can take minutes.
@@ -1316,45 +1442,35 @@ def cmd_generate(args):
         save_image(img_data, p, overwrite=overwrite)
         saved_paths.append(p)
         print(f"Saved {p}")
-    if contact:
-        make_contact_sheet(saved_paths, contact)
-        if contact.exists():
-            print(f"Saved {contact} (contact sheet)")
 
-    if platform_spec:
-        for p in saved_paths:
-            platform_fit(p, platform_spec["width"], platform_spec["height"])
-        print(f"  Fitted to {platform_spec['width']}x{platform_spec['height']} ({platform})")
-
+    # The final row, written before any post-processing, so nothing that can
+    # go wrong in ImageMagick can lose the record of what was billed.
     estimated = per * len(images)
     actual = cost_from_usage(model, usage)
-    entry = HistoryEntry(
-        timestamp=datetime.now().isoformat(),
-        prompt=args.prompt,
-        preset=args.preset,
-        platform=platform,
-        model=model,
-        quality=quality,
-        size=size_label,
-        background=background,
-        output_format=output_format,
-        provider=provider,
+    entry = replace(
+        pending,
         n=len(images),
-        # Absolute, always. A relative "." recorded from one directory would
-        # match every other directory the CLI is later run from, and set_profile
-        # would hand back some unrelated folder's house tier.
         output=str(saved_paths[0].resolve()),
         output_dir=str(saved_paths[0].resolve().parent),
-        project=args.project,
         estimated_cost=estimated,
         actual_cost=actual,
         usage=usage or None,
         **set_fields(saved_paths[0].resolve().parent),
+        status="complete",
+        duration_s=round(time.monotonic() - started, 1),
     )
     save_history(entry)
     if getattr(args, "sidecar", False):
         for p in saved_paths:
             save_metadata(p, entry)
+
+    if contact and make_contact_sheet(saved_paths, contact) and contact.exists():
+        print(f"Saved {contact} (contact sheet)")
+
+    if platform_spec:
+        fitted = [platform_fit(p, platform_spec["width"], platform_spec["height"]) for p in saved_paths]
+        if all(fitted):
+            print(f"  Fitted to {platform_spec['width']}x{platform_spec['height']} ({platform})")
 
     if actual is not None:
         drift = ""
@@ -1458,7 +1574,13 @@ def cmd_history(args):
         # ~ marks an estimate; a bare figure is what the API said it billed.
         marker = "" if e.get("actual_cost") else "~"
         cost = f"{marker}${billed:.3f}" if billed else "?"
+        status = e.get("status")
+        if status == "failed":
+            cost = "failed"
         preset = f" [{e['preset']}]" if e.get("preset") else ""
+        if status == "pending":
+            # Sent, and no result was ever recorded: killed, or timed out.
+            preset += " [pending: no result recorded, counted at the estimate]"
         q = e.get("quality", "?")
         model = (e.get("model") or "gpt-image-2").replace("gpt-image-", "")
         print(f"  {ts}  {cost:>8s}  {model:<14s} q:{q:<6s}  {prompt}{preset}")
