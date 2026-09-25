@@ -19,20 +19,23 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
+  # THE ESTATE FLOOR, defined once in dbhq-uk/.github (dbhq-uk/.github#4):
+  # SKILL.md frontmatter parses as YAML and names its directory, plugin.json
+  # parses and carries no version, skill paths are braced, every shell script
+  # passes bash -n and shellcheck -S warning, ruff E9,F, and no em or en
+  # dashes. Pinned by SHA; Dependabot moves the pin.
+  floor:
+    uses: dbhq-uk/.github/.github/workflows/skill-floor.yml@af131df509f44eb9abfe8b37ad6299c11f496c5f
+    with:
+      # Scripts and catalogues are held to the dash rule too, as they were
+      # before the floor. This one earns its place: the catalogue arrived from
+      # upstream with an em dash in every preset description.
+      dash-files: "*.md *.sh *.py *.yaml *.json"
+
   validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      # No `version` in plugin.json, on purpose (24 Sep 2026). Claude Code only
-      # updates an installed plugin when this field changes, it was never bumped,
-      # and marketplace installs sat on old code for weeks. With no version the
-      # commit is the version, so every merge to main reaches users.
-      - name: plugin.json carries no version
-        run: jq -e 'has("version") | not' .claude-plugin/plugin.json > /dev/null
-
-      - name: Validate plugin manifest is valid JSON
-        run: jq empty .claude-plugin/plugin.json
 
       - name: Validate the preset and platform catalogues parse
         # These are data, and a slip in them fails at generation time with the
@@ -63,47 +66,12 @@ jobs:
           print(f"all {len(presets)} presets complete")
           PY
 
-      - name: Check shell scripts parse
-        # Root installers included: a syntax error there breaks every install.
-        run: |
-          fail=0
-          while IFS= read -r s; do
-            bash -n "$s" || { echo "Syntax error: $s"; fail=1; }
-          done < <({ find . -maxdepth 1 -name '*.sh'; find skills -name '*.sh'; })
-          exit $fail
-
-      - name: shellcheck
-        # ubuntu-latest ships shellcheck. ./ prefixes so a filename beginning
-        # with a dash could never be read as an option (SC2035).
+      - name: shellcheck at every severity
+        # Stricter than the floor, which stops at -S warning: this repository
+        # also keeps `info` and `style` clean. ubuntu-latest ships shellcheck.
+        # ./ prefixes so a filename beginning with a dash could never be read
+        # as an option (SC2035).
         run: shellcheck ./install.sh ./install-codex.sh ./skills/*/scripts/*.sh
-
-      - name: Check SKILL.md frontmatter
-        run: |
-          python3 - <<'PY'
-          import sys, pathlib, re
-          ok = True
-          for skill in sorted(pathlib.Path("skills").glob("*/SKILL.md")):
-              text = skill.read_text(encoding="utf-8")
-              m = re.match(r"^---\n(.*?)\n---", text, re.S)
-              if not m:
-                  print(f"{skill}: missing YAML frontmatter"); ok = False; continue
-              fm = m.group(1)
-              name = re.search(r"^name:\s*(.+)$", fm, re.M)
-              desc = re.search(r"^description:\s*(.+)$", fm, re.M)
-              if not name:
-                  print(f"{skill}: missing 'name'"); ok = False
-              else:
-                  name = name.group(1).strip()
-                  if name != skill.parent.name:
-                      print(f"{skill}: name '{name}' != directory '{skill.parent.name}'"); ok = False
-                  if not re.fullmatch(r"[a-z0-9-]{1,64}", name):
-                      print(f"{skill}: name must be lowercase alphanumeric/hyphen, <=64 chars"); ok = False
-              if not desc:
-                  print(f"{skill}: missing 'description'"); ok = False
-              elif len(desc.group(1).strip()) > 1024:
-                  print(f"{skill}: description exceeds 1024 chars"); ok = False
-          sys.exit(0 if ok else 1)
-          PY
 
       # The whole install story rests on ${CLAUDE_SKILL_DIR} being substituted.
       # A hardcoded ~/.claude/skills path works on the author's machine and is
@@ -120,21 +88,6 @@ jobs:
             exit 1
           fi
           echo "No hardcoded install paths."
-
-      # House style across DBHQ is a plain hyphen. Blockquoted lines are exempt
-      # so a document can quote someone else's prose verbatim. This one earns
-      # its place: the catalogue arrived from upstream with an em dash in every
-      # preset description.
-      - name: No em dashes in our own prose
-        run: |
-          hits=$(grep -rn $'—' --include='*.md' --include='*.sh' --include='*.py' --include='*.yaml' --include='*.json' . \
-                 | grep -v ':[0-9]*:[[:space:]]*>' || true)
-          if [ -n "$hits" ]; then
-            echo "$hits"
-            echo "::error::Em dash found outside a quoted specimen. House style is a plain hyphen."
-            exit 1
-          fi
-          echo "No em dashes outside quoted specimens."
 
       # The API key is read from the environment and never stored, so nothing
       # here should ever look like one. Checked anyway: a key pasted into a
@@ -293,6 +246,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - floor
       - validate
       - lint
       - tests
