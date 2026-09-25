@@ -63,6 +63,14 @@ Each entry in `presets.json` has two fields and they are not interchangeable. `d
 
 CI checks that both are present on every preset, because a preset with one missing is listable and unusable, and nothing else in the pipeline notices.
 
+## SKILL.md is for the agent; the history lives here
+
+`SKILL.md` is loaded into the agent's context every time the skill runs, so every word in it costs something on every call. Keep it under 2,000 words, with instructions only. A test holds the ceiling, and holds the sections that must stay: "When not to use", the timeout guidance, the retirement dates, and no Claude-only tool names, since the skill also ships for Codex. The reasons behind the rules go here or in a commit message, not there.
+
+**Why Step 0 exists.** On 21 Aug 2026 all three tiers were generated side by side for one set of small images, and low was chosen, because the images ship at 300x400 and the downscale throws away what the higher tiers buy. Two days later a new batch for the same set went out at high, only because high was the default then, at 35 times the price for no visible difference. The answer was in `history.jsonl` the whole time. That is why the CLI matches a set's tier by itself, why Step 4 says to pass no `--quality` into an existing set, and why `batch` exists rather than a hand-written runner.
+
+**Why `--seed` and `--thinking` error rather than vanish** is constraint 4 above. `SKILL.md` now says only that neither exists.
+
 ## Validating a change
 
 ```bash

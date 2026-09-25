@@ -1703,6 +1703,43 @@ class TestBatch(IsolatedHome):
         self.assertNotIn("python3 -c", text)
 
 
+class TestSkillMdShape(unittest.TestCase):
+    """SKILL.md is loaded on every call, so its size and its load-bearing sections are held here."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (Path(__file__).parent.parent / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_it_stays_under_2000_words(self):
+        self.assertLess(len(self.text.split()), 2000)
+
+    def test_it_says_when_not_to_use_it(self):
+        section = self.text.split("## When not to use")[1].split("\n## ")[0]
+        for kind in ("SVG", "diagram", "image_gen"):
+            self.assertIn(kind, section)
+
+    def test_it_gives_timeout_guidance(self):
+        section = self.text.split("## Timeouts")[1].split("\n## ")[0]
+        self.assertIn("120 seconds", section)
+        self.assertIn("background", section)
+        self.assertIn("pending", section)
+
+    def test_it_names_no_claude_only_tool(self):
+        # The skill ships for Codex too, which has no AskUserQuestion.
+        self.assertNotIn("AskUserQuestion", self.text)
+
+    def test_retirement_dates_match_openais_deprecations_page(self):
+        # developers.openai.com/api/docs/deprecations: gpt-image-1 shuts down
+        # 2026-10-23; gpt-image-1.5, gpt-image-1-mini and chatgpt-image-latest
+        # on 2026-12-01.
+        self.assertIn("`gpt-image-1` leaves the API on\n**23 October 2026**", self.text)
+        self.assertIn("`chatgpt-image-latest` on\n**1 December 2026**", self.text)
+
+    def test_it_asks_for_a_dry_run_read_before_spending(self):
+        step4 = self.text.split("### Step 4")[1].split("### Step 5")[0]
+        self.assertIn("--dry-run", step4)
+
+
 class TestDraftSize(IsolatedHome):
     def test_draft_honours_the_config_size(self):
         imager.ensure_config_dir()
