@@ -36,7 +36,7 @@ A preset is not a style word. It is a full prompt fragment that has to work on a
 
 **Both fields, and know which is which.** `description` is what the user picks from; `prompt` is what is sent. Editing a description changes a label. Editing a prompt changes every image that preset will ever produce, including for people who have been happy with it. Treat a prompt edit on an existing preset as a breaking change and say so.
 
-**Say what it excludes.** Most of the visual presets end with `no text, no labels`, and that is doing real work - GPT Image 2 will happily letter an image you wanted clean. If your preset is meant to be text-free, say so in the prompt.
+**Say what it excludes.** Most of the visual presets end with `no text, no labels`, and that is doing real work - the GPT Image models will happily letter an image you wanted clean. If your preset is meant to be text-free, say so in the prompt.
 
 ## What we will not accept
 
