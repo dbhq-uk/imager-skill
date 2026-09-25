@@ -34,20 +34,15 @@ jobs:
       - name: Validate plugin manifest is valid JSON
         run: jq empty .claude-plugin/plugin.json
 
-      - name: Install PyYAML for the catalogue checks
-        # The runner's system python does not carry it, and these two checks
-        # read the catalogues as data rather than as text.
-        run: python3 -m pip install --break-system-packages pyyaml
-
       - name: Validate the preset and platform catalogues parse
-        # These are data, and a YAML slip in them fails at generation time with
-        # the user's prompt already typed. Cheaper to catch here.
+        # These are data, and a slip in them fails at generation time with the
+        # user's prompt already typed. Cheaper to catch here.
         run: |
           python3 - <<'PY'
-          import sys, yaml, pathlib
-          for f in ("presets.yaml", "platforms.yaml"):
+          import sys, json, pathlib
+          for f in ("presets.json", "platforms.json"):
               p = pathlib.Path("skills/imager") / f
-              d = yaml.safe_load(p.read_text(encoding="utf-8"))
+              d = json.loads(p.read_text(encoding="utf-8"))
               if not isinstance(d, dict) or not d:
                   print(f"{p}: not a non-empty mapping"); sys.exit(1)
               print(f"{p}: {len(d)} entries")
@@ -59,8 +54,8 @@ jobs:
         # nothing else in the pipeline notices.
         run: |
           python3 - <<'PY'
-          import sys, yaml, pathlib
-          presets = yaml.safe_load(pathlib.Path("skills/imager/presets.yaml").read_text(encoding="utf-8"))
+          import sys, json, pathlib
+          presets = json.loads(pathlib.Path("skills/imager/presets.json").read_text(encoding="utf-8"))
           bad = [k for k, v in presets.items()
                  if not isinstance(v, dict) or not v.get("description") or not v.get("prompt")]
           if bad:
@@ -131,7 +126,7 @@ jobs:
       # preset description.
       - name: No em dashes in our own prose
         run: |
-          hits=$(grep -rn $'—' --include='*.md' --include='*.sh' --include='*.py' --include='*.yaml' . \
+          hits=$(grep -rn $'—' --include='*.md' --include='*.sh' --include='*.py' --include='*.yaml' --include='*.json' . \
                  | grep -v ':[0-9]*:[[:space:]]*>' || true)
           if [ -n "$hits" ]; then
             echo "$hits"
@@ -146,7 +141,7 @@ jobs:
       # gets committed, and OpenAI keys are self-identifying.
       - name: No API keys in the tree
         run: |
-          if grep -rnE 'sk-[A-Za-z0-9_-]{20,}' --include='*.md' --include='*.py' --include='*.sh' --include='*.yaml' . ; then
+          if grep -rnE 'sk-[A-Za-z0-9_-]{20,}' --include='*.md' --include='*.py' --include='*.sh' --include='*.yaml' --include='*.json' . ; then
             echo "::error::Something matching an OpenAI API key is committed."
             exit 1
           fi
@@ -180,9 +175,9 @@ jobs:
       fail-fast: false
       matrix:
         # 3.9 floor: the script's `str | None` hints are safe below 3.10 because
-        # it carries `from __future__ import annotations`, and PyYAML (its only
-        # dependency) supports 3.8+. Sampled rather than swept - floor, middle,
-        # ceiling is enough to catch a syntax or stdlib regression.
+        # it carries `from __future__ import annotations`, and it has no
+        # dependency to hold the floor up. Sampled rather than swept - floor,
+        # middle, ceiling is enough to catch a syntax or stdlib regression.
         python-version: ['3.9', '3.11', '3.13']
 
     steps:
@@ -192,11 +187,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        working-directory: skills/imager
-        run: |
-          python -m pip install --upgrade pip pytest
-          python -m pip install -r requirements.txt
+      - name: Install pytest
+        # The skill itself has no dependencies. pytest is for the suite only.
+        run: python -m pip install --upgrade pip pytest
 
       - name: Run test suite
         working-directory: skills/imager
@@ -228,16 +221,15 @@ jobs:
           ./install.sh
           test -L "$HOME/.claude/skills/imager" || { echo "not a symlink"; exit 1; }
           test -f "$HOME/.claude/skills/imager/SKILL.md" || { echo "SKILL.md missing"; exit 1; }
-          test -x "$HOME/.claude/skills/imager/.venv/bin/python" || { echo "venv missing"; exit 1; }
 
       - name: The installed skill can actually generate a prompt
         # --dry-run builds the full prompt from the preset and the platform and
         # returns before any request. It is the cheapest end-to-end assertion
-        # available: it proves the venv, PyYAML, and both catalogues line up.
+        # available: it proves python3 and both catalogues line up.
         env:
           OPENAI_API_KEY: test-key-not-real
         run: |
-          "$HOME/.claude/skills/imager/.venv/bin/python" \
+          python3 \
             "$HOME/.claude/skills/imager/scripts/imager.py" \
             --dry-run --preset editorial --platform square "a test subject" /tmp/out.png
 
@@ -248,10 +240,7 @@ jobs:
           test -f "$target/SKILL.md" || { echo "SKILL.md missing"; exit 1; }
           grep -q 'CLAUDE_SKILL_DIR' "$target/SKILL.md" && { echo "variable not substituted"; exit 1; }
           test -d "$target/references" || { echo "references/ not linked"; exit 1; }
-          test -d "$target/.venv" || { echo ".venv not linked"; exit 1; }
-          # Every path the rewritten SKILL.md names must exist on disk. No
-          # exemptions: setup.sh runs before the link is made precisely so the
-          # venv path is real by the time this check reads it.
+          # Every path the rewritten SKILL.md names must exist on disk.
           fail=0
           while IFS= read -r p; do
             [ -e "$p" ] || { echo "rewritten path does not exist: $p"; fail=1; }
@@ -264,6 +253,38 @@ jobs:
           if [ -n "$found" ]; then echo "::error::dangling symlinks:"; echo "$found"; exit 1; fi
           echo "No dangling symlinks."
 
+  # /plugin install and `npx skills add` copy the skill directory and run
+  # nothing - no installer, no setup.sh. So the skill has to run from a bare
+  # copy, on a Python with no packages at all. This job is that install: a
+  # fresh interpreter, the directory copied, and a dry run through it.
+  bare-copy:
+    name: Runs from a bare copy, no setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.9'
+
+      - name: The interpreter has no third-party packages to lean on
+        run: |
+          if python -c "import yaml" 2>/dev/null; then
+            echo "::error::PyYAML is importable, so this job would not prove anything"; exit 1
+          fi
+
+      - name: Copy the skill directory, run nothing, dry-run it
+        env:
+          OPENAI_API_KEY: test-key-not-real
+        run: |
+          copy="$RUNNER_TEMP/plugin/imager"
+          mkdir -p "$(dirname "$copy")"
+          cp -R skills/imager "$copy"
+          cd "$RUNNER_TEMP"
+          python "$copy/scripts/imager.py" --dry-run --preset editorial --platform square \
+            "a test subject" "$RUNNER_TEMP/out.png"
+          python "$copy/scripts/imager.py" list-presets > /dev/null
+
   # Single required check for branch protection. Adding a job above does not mean
   # remembering to add it to the protection rule - it only needs listing here.
   ci-ok:
@@ -275,6 +296,7 @@ jobs:
       - lint
       - tests
       - installers
+      - bare-copy
     steps:
       - name: Fail if any job did not succeed
         run: |

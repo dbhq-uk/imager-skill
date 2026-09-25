@@ -15,21 +15,5 @@ updates:
         patterns:
           - "*"
 
-  # One dependency, PyYAML, and the CLI speaks to the OpenAI API over the
-  # standard library rather than through a vendor SDK. That is deliberate: the
-  # smaller the dependency surface on a skill that holds an API key, the less
-  # there is to audit. Kept current anyway.
-  - package-ecosystem: pip
-    directory: /skills/imager
-    schedule:
-      interval: weekly
-      day: monday
-    labels:
-      - dependencies
-      - python
-    commit-message:
-      prefix: "deps"
-    groups:
-      python:
-        patterns:
-          - "*"
+  # No pip entry. The skill uses the Python standard library only, so there
+  # is no requirements file for Dependabot to watch.

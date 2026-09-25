@@ -40,17 +40,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
-try:
-    import yaml
-except ImportError:
-    print("Error: PyYAML not installed. Run: pip3 install pyyaml", file=sys.stderr)
-    sys.exit(1)
-
+# STANDARD LIBRARY ONLY. /plugin install and `npx skills add` copy the skill
+# directory and run nothing, so a dependency that needs an install step is a
+# skill that cannot start. PyYAML was the only one, for three small files: the
+# two catalogues are JSON now, and config.yaml is read by parse_config below.
 SKILL_DIR = Path(__file__).resolve().parent.parent
-PRESETS_FILE = SKILL_DIR / "presets.yaml"
-PLATFORMS_FILE = SKILL_DIR / "platforms.yaml"
+PRESETS_FILE = SKILL_DIR / "presets.json"
+PLATFORMS_FILE = SKILL_DIR / "platforms.json"
 
 
 def _migrate_legacy_settings() -> None:
@@ -596,10 +594,113 @@ def size_for(args_size: str | None, platform: dict | None) -> str | None:
 # ---------- Config & secrets ----------
 
 
+def _closing_quote(text: str) -> int:
+    """Index of the quote that closes text[0], or -1. '' escapes in single quotes, a backslash in double."""
+    quote, i = text[0], 1
+    while i < len(text):
+        if quote == '"' and text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == quote:
+            if quote == "'" and text[i + 1 : i + 2] == "'":
+                i += 2
+                continue
+            return i
+        i += 1
+    return -1
+
+
+def config_value(text: str, where: str):
+    """One value from config.yaml, typed the way YAML would type it."""
+    if text[:1] in ("'", '"'):
+        end = _closing_quote(text)
+        rest = text[end + 1 :].strip() if end != -1 else ""
+        if end == -1 or (rest and not rest.startswith("#")):
+            config_error(where, "a quoted value that does not close cleanly")
+        body = text[1:end]
+        if text[0] == "'":
+            return body.replace("''", "'")
+        try:
+            return json.loads(f'"{body}"')
+        except ValueError:
+            config_error(where, "an escape in a double-quoted value that cannot be read")
+    comment = re.search(r"\s#", text)
+    if comment:
+        text = text[: comment.start()]
+    text = text.strip()
+    if text[:1] in ("{", "[", "&", "*", "!", "|", ">"):
+        config_error(where, "a nested or flow value")
+    if text in ("", "~", "null", "Null", "NULL"):
+        return None
+    if text in ("true", "True", "TRUE"):
+        return True
+    if text in ("false", "False", "FALSE"):
+        return False
+    if re.fullmatch(r"[-+]?\d+", text):
+        return int(text)
+    if re.fullmatch(r"[-+]?(\d+\.\d*|\.\d+|\d+)([eE][-+]?\d+)?", text):
+        return float(text)
+    return text
+
+
+def config_error(where: str, what: str) -> NoReturn:
+    print(
+        f"Error: {where} has {what}. config.yaml holds flat `key: value` lines only, for example\n"
+        f"       model: gpt-image-2.5-flare\n"
+        f"       daily_cap: 20",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def parse_config(text: str, source: str = "config.yaml") -> dict[str, Any]:
+    """config.yaml, read without PyYAML.
+
+    The file has only ever held flat `key: value` lines - provider, model,
+    quality, size, daily_cap - so this reads exactly that subset: comments,
+    quoted and plain strings, numbers, true/false and null. Anything nested is
+    refused with the line number rather than guessed at.
+    """
+    config: dict[str, Any] = {}
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#") or line == "---":
+            continue
+        where = f"{source} line {number}"
+        if raw[:1] in (" ", "\t") or line.startswith("- "):
+            config_error(where, "an indented or list line")
+        key, sep, value = line.partition(":")
+        key = key.strip()
+        if not sep or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key):
+            config_error(where, "a line that is not `key: value`")
+        if value and value[:1] not in (" ", "\t"):
+            config_error(where, "no space after the colon")
+        config[key] = config_value(value.strip(), where)
+    return config
+
+
+def dump_config(config: dict) -> str:
+    """The inverse of parse_config, for the handful of plain values init writes."""
+    lines = []
+    for key, value in config.items():
+        if value is None:
+            text = "null"
+        elif isinstance(value, bool):
+            text = str(value).lower()
+        elif isinstance(value, str):
+            # Plain when it reads back as the same string, quoted otherwise
+            # ("true", "20", anything with a colon, a hash or a space).
+            plain = re.fullmatch(r"[A-Za-z0-9_./+-]+", value) and config_value(value, key) == value
+            text = value if plain else json.dumps(value)
+        else:
+            text = str(value)
+        lines.append(f"{key}: {text}\n")
+    return "".join(lines)
+
+
 def load_config() -> dict[str, Any]:
     if CONFIG_FILE.exists():
-        with CONFIG_FILE.open() as f:
-            return yaml.safe_load(f) or {}
+        return parse_config(CONFIG_FILE.read_text(encoding="utf-8"), str(CONFIG_FILE))
     return {}
 
 
@@ -611,18 +712,22 @@ def get_api_key(provider: str) -> str | None:
 # ---------- Presets ----------
 
 
+def load_catalogue(path: Path) -> dict[str, dict]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) or {}
+    except ValueError as e:
+        print(f"Error: {path} is not valid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def load_presets() -> dict[str, dict]:
-    if PRESETS_FILE.exists():
-        with PRESETS_FILE.open() as f:
-            return yaml.safe_load(f) or {}
-    return {}
+    return load_catalogue(PRESETS_FILE)
 
 
 def load_platforms() -> dict[str, dict]:
-    if PLATFORMS_FILE.exists():
-        with PLATFORMS_FILE.open() as f:
-            return yaml.safe_load(f) or {}
-    return {}
+    return load_catalogue(PLATFORMS_FILE)
 
 
 def compose_prompt(user_prompt: str, preset_name: str | None) -> str:
@@ -1325,8 +1430,7 @@ def cmd_init():
         # flow depends on - the wizard reintroduced the bug the default was
         # changed to prevent.
         defaults = {"provider": "openai", "model": DEFAULT_MODEL}
-        with CONFIG_FILE.open("w") as f:
-            yaml.dump(defaults, f, default_flow_style=False)
+        CONFIG_FILE.write_text(dump_config(defaults), encoding="utf-8")
         print(f"\nConfig saved to {CONFIG_FILE}")
     else:
         print(f"\nConfig already exists at {CONFIG_FILE}")

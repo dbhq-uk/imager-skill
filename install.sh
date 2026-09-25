@@ -7,9 +7,8 @@
 # ~/.claude/skills/ - every edit (scripts AND SKILL.md) is immediately live,
 # with no per-file rewrite. Re-run only when you add a new skill directory.
 #
-# The venv is deliberately built INSIDE the skill directory rather than in a
-# shared location: ${CLAUDE_SKILL_DIR}/.venv/bin/python is then correct under a
-# personal install, a Codex install and a plugin install without a lookup.
+# Nothing is installed besides the link. The CLI uses the Python standard
+# library only, so the system python3 runs it under every install shape.
 
 set -e
 
@@ -21,14 +20,14 @@ echo
 
 # --- Dependencies ---
 # 3.9 is the floor: the CLI carries `from __future__ import annotations`, so its
-# PEP 604 hints are safe below 3.10, and PyYAML (its only dependency) supports
-# 3.8+. ImageMagick is checked by setup.sh rather than here, because it is
+# PEP 604 hints are safe below 3.10. It has no other dependency. ImageMagick is
+# checked by setup.sh rather than here, because it is
 # optional - it is needed for platform resizing and carousel contact sheets, and
 # for nothing else.
 if ! command -v python3 >/dev/null 2>&1; then
   echo "Missing required dependency: python3"
   echo "  macOS:  brew install python"
-  echo "  Ubuntu: sudo apt install python3 python3-venv"
+  echo "  Ubuntu: sudo apt install python3"
   exit 1
 fi
 if ! python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"; then
@@ -54,10 +53,9 @@ echo
 echo "Installed as directory symlinks - all edits (scripts and SKILL.md) are live. Re-run only when adding a new skill."
 echo
 
-# --- Setup: venv + dependency ---
-# Run unconditionally, unlike the garmin skill's installer. There is nothing to
-# prompt for here: the API key is read from the environment rather than stored,
-# so setup is idempotent and safe to repeat.
+# --- Check the machine ---
+# setup.sh installs nothing. It checks python3, reminds you about the API key
+# (read from the environment, never stored) and looks for ImageMagick.
 "$SKILLS_ROOT/imager/scripts/setup.sh"
 
 echo

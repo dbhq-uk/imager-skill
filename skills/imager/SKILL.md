@@ -79,7 +79,7 @@ skip to Step 3.
 
 ### Step 2: Style selection
 
-Show the user available presets grouped by category. Read `presets.yaml` and present them:
+Show the user available presets grouped by category. Read `presets.json` and present them:
 
 **Visual styles** (no text in image):
 editorial, blueprint, ink, risograph, wireframe, constellation, brutalist, grain, nordic,
@@ -358,10 +358,11 @@ Both now fail with an error rather than being silently dropped, because a script
 
 ## CLI Reference
 
-Always invoke through the skill's venv:
+Run it with the system `python3` (3.9 or later). It uses the standard library only, so there is
+nothing to install first.
 
 ```bash
-PY=${CLAUDE_SKILL_DIR}/.venv/bin/python
+PY=python3
 GEN=${CLAUDE_SKILL_DIR}/scripts/imager.py
 
 # Basic generation (gpt-image-2.5-flare, quality low)
@@ -436,12 +437,13 @@ no moderation setting, and the CLI refuses `--moderation` on them.
 
 ## Files
 
-- `scripts/imager.py` - main CLI (Python, requires PyYAML)
-- `scripts/setup.sh` - creates the venv and installs PyYAML
-- `presets.yaml` - 27 style presets (visual + text-heavy + community + social)
-- `platforms.yaml` - 8 platform sizing presets
+- `scripts/imager.py` - main CLI (Python 3.9+, standard library only)
+- `scripts/setup.sh` - optional check of python3, the API key and ImageMagick; installs nothing
+- `presets.json` - 27 style presets (visual + text-heavy + community + social)
+- `platforms.json` - 8 platform sizing presets
 - `references/api_reference.md` - full API documentation
-- `~/.dbhq/imager/config.yaml` - user defaults, and the optional `daily_cap`
+- `~/.dbhq/imager/config.yaml` - user defaults, and the optional `daily_cap`. Flat `key: value`
+  lines only
 - `~/.dbhq/imager/history.jsonl` - generation log, including billed cost and token usage. A
   row is written before each request and completed after it, so a run killed mid-request
   still shows in `history` as pending and still counts, at its estimate, in the day's total

@@ -11,9 +11,8 @@ Thumbs.db
 .serena/
 .superpowers/
 
-# Python. Unlike the prose-only skills in this org, these are real: setup.sh
-# builds .venv inside skills/imager/, which is exactly where SKILL.md
-# expects it and exactly where it must never be committed.
+# Python. The skill needs no venv, but an old install may have left one in
+# skills/imager/, and a contributor may make one for pytest.
 .venv/
 venv/
 __pycache__/

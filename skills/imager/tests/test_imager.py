@@ -6,8 +6,8 @@ api_request, and nothing here calls it. The CLI cases run --dry-run, which
 returns before the request is built (but *after* the API-key check, hence the
 dummy key in the subprocess environment).
 
-The yaml-shape tests are the point of this file as much as the unit tests are.
-presets.yaml and platforms.yaml are the skill's real configuration surface --
+The catalogue-shape tests are the point of this file as much as the unit tests are.
+presets.json and platforms.json are the skill's real configuration surface --
 a preset that loses its {subject} placeholder silently generates an image of
 the style description instead of the user's subject, and nothing else in the
 repo would catch it.
@@ -570,14 +570,14 @@ class TestWire(unittest.TestCase):
 
 
 class TestPresetsFile(unittest.TestCase):
-    """presets.yaml must stay structurally sound -- nothing else validates it."""
+    """presets.json must stay structurally sound -- nothing else validates it."""
 
     @classmethod
     def setUpClass(cls):
         cls.presets = imager.load_presets()
 
     def test_file_is_not_empty(self):
-        self.assertGreater(len(self.presets), 0, "presets.yaml loaded as empty")
+        self.assertGreater(len(self.presets), 0, "presets.json loaded as empty")
 
     def test_every_preset_has_description_and_prompt(self):
         for name, preset in self.presets.items():
@@ -609,7 +609,7 @@ class TestPlatformsFile(unittest.TestCase):
         cls.platforms = imager.load_platforms()
 
     def test_file_is_not_empty(self):
-        self.assertGreater(len(self.platforms), 0, "platforms.yaml loaded as empty")
+        self.assertGreater(len(self.platforms), 0, "platforms.json loaded as empty")
 
     def test_every_platform_has_positive_integer_dimensions(self):
         for name, platform in self.platforms.items():
@@ -625,6 +625,95 @@ class TestPlatformsFile(unittest.TestCase):
             with self.subTest(platform=name):
                 w, h = imager.snap_size(platform["width"], platform["height"])
                 self.assertIsNone(imager.size_problem(w, h))
+
+
+class TestNoDependencies(unittest.TestCase):
+    """/plugin install and `npx skills add` copy the directory and run nothing."""
+
+    def test_runs_from_a_bare_copy_with_no_site_packages(self):
+        # -S keeps site-packages off the path, so only the standard library can
+        # be imported: the same position as a system python3 with nothing
+        # installed. Run from a copy, as a plugin install would be.
+        skill = Path(__file__).resolve().parent.parent
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / "imager"
+            shutil.copytree(skill, copy, ignore=shutil.ignore_patterns(".venv", "tests", "__pycache__"))
+            env = {
+                "PATH": os.environ.get("PATH", ""),
+                "OPENAI_API_KEY": "test-key-not-real",
+                "GPT_IMAGE_HOME": str(Path(tmp) / "settings"),
+            }
+            for argv in (
+                ["--dry-run", "--preset", "editorial", "--platform", "square", "a subject", str(Path(tmp) / "o.png")],
+                ["list-presets"],
+            ):
+                with self.subTest(argv=argv[0]):
+                    result = subprocess.run(
+                        [sys.executable, "-S", str(copy / "scripts" / "imager.py"), *argv],
+                        capture_output=True,
+                        text=True,
+                        env=env,
+                        cwd=tmp,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("editorial", result.stdout)
+
+    def test_skill_md_runs_the_cli_with_python3_not_a_venv(self):
+        text = (Path(__file__).parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("PY=python3", text)
+        self.assertNotIn(".venv", text)
+        self.assertNotIn("PyYAML", text)
+
+
+class TestConfigFile(IsolatedHome):
+    """config.yaml is read without PyYAML, so the reader is tested against what YAML would say."""
+
+    def test_the_shapes_config_yaml_really_has(self):
+        text = (
+            "# defaults\n"
+            "provider: openai\n"
+            "model: gpt-image-2.5-flare   # trailing comment\n"
+            "size: 1536x864\n"
+            "daily_cap: 20\n"
+            "limit: 12.5\n"
+            "quoted: 'it''s here'\n"
+            'command: "/path/to/preview.sh {path} {name} # not a comment"\n'
+            "empty:\n"
+            "flag: true\n"
+            "url: http://example.invalid/a#b\n"
+        )
+        self.assertEqual(
+            imager.parse_config(text),
+            {
+                "provider": "openai",
+                "model": "gpt-image-2.5-flare",
+                "size": "1536x864",
+                "daily_cap": 20,
+                "limit": 12.5,
+                "quoted": "it's here",
+                "command": "/path/to/preview.sh {path} {name} # not a comment",
+                "empty": None,
+                "flag": True,
+                "url": "http://example.invalid/a#b",
+            },
+        )
+
+    def test_anything_nested_is_refused_with_its_line(self):
+        for text in ("model: x\nsizes:\n  - 1024x1024\n", "model: {a: 1}\n", "model: 'open\n", "model:x\n"):
+            with self.subTest(text=text):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+                    imager.parse_config(text, "config.yaml")
+                self.assertIn("config.yaml line", err.getvalue())
+
+    def test_dump_reads_back_the_same(self):
+        config = {"provider": "openai", "model": "gpt-image-2.5-flare", "a": "true", "b": "20", "c": "x: y #z"}
+        self.assertEqual(imager.parse_config(imager.dump_config(config)), config)
+
+    def test_init_writes_a_config_the_cli_reads_back(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            imager.cmd_init()
+        self.assertEqual(imager.load_config(), {"provider": "openai", "model": imager.DEFAULT_MODEL})
 
 
 class TestComposePrompt(unittest.TestCase):

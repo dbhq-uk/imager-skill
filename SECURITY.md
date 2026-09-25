@@ -43,7 +43,7 @@ protecting it.
 
 - Installs into `~/.claude/skills/imager` or `~/.codex/skills/imager`,
   depending on the agent
-- Builds a virtualenv at `skills/imager/.venv`
+- Installs no packages: the CLI runs on the system `python3` with the standard library only
 - Writes generated images where you tell it to, and defaults to the working
   directory
 - Writes config, history and last-run state to `~/.dbhq/imager/`
@@ -57,10 +57,10 @@ no config setting and no code path that passes it on your behalf.
 
 ### Third-party code
 
-One runtime dependency, **PyYAML**, for the two catalogue files. The API calls
-use the standard library rather than a vendor SDK, deliberately: this is a skill
-that holds an API key, and the less code sits between the key and the wire, the
-less there is to audit before trusting it. Dependabot keeps the pin current.
+None at runtime. The CLI uses the Python standard library only, and the API
+calls go out over `urllib` rather than a vendor SDK, deliberately: this is a
+skill that holds an API key, and the less code sits between the key and the
+wire, the less there is to audit before trusting it.
 
 ## Standing position on scanner findings
 

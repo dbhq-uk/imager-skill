@@ -26,20 +26,17 @@ Adapted from [glebis/claude-skills](https://github.com/glebis/claude-skills/tree
 ## Quick Start
 
 ```bash
-# 1. Install the skill, then create the venv and install PyYAML
+# 1. Install the skill. Nothing else to install: standard library only
 ./install.sh                          # from the repo root
-${CLAUDE_SKILL_DIR}/scripts/setup.sh
 
 # 2. Set your OpenAI API key
 export OPENAI_API_KEY=sk-...
 
 # 3. Run the onboarding wizard
-${CLAUDE_SKILL_DIR}/.venv/bin/python \
-  ${CLAUDE_SKILL_DIR}/scripts/imager.py init
+python3 ${CLAUDE_SKILL_DIR}/scripts/imager.py init
 
 # 4. Try a draft image
-${CLAUDE_SKILL_DIR}/.venv/bin/python \
-  ${CLAUDE_SKILL_DIR}/scripts/imager.py \
+python3 ${CLAUDE_SKILL_DIR}/scripts/imager.py \
   --draft --preset editorial "a cat astronaut" ./cat.png
 ```
 
@@ -71,10 +68,10 @@ estimate. Both now fail with an error explaining what to use instead - the promp
 ## Files
 
 - `SKILL.md` - interactive workflow Claude follows when invoked
-- `scripts/imager.py` - main CLI (Python, requires PyYAML)
-- `scripts/setup.sh` - creates the venv and installs PyYAML
-- `presets.yaml` - 27 style presets
-- `platforms.yaml` - 8 platform sizes
+- `scripts/imager.py` - main CLI (Python 3.9+, standard library only)
+- `scripts/setup.sh` - checks python3, the API key and ImageMagick; installs nothing
+- `presets.json` - 27 style presets
+- `platforms.json` - 8 platform sizes
 - `references/api_reference.md` - full API documentation
 
 User config and history live at `~/.dbhq/imager/`. Set `GPT_IMAGE_HOME` to relocate them.

@@ -24,12 +24,9 @@ fi
 echo "Dependencies OK."
 echo
 
-# --- Setup first, then link ---
-# Order matters here and it is the one thing this script does differently from
-# the prose-only skills in this org. The rewritten SKILL.md names
-# <target>/.venv/bin/python, so the venv has to exist in the source tree before
-# the link is made - link first and you get a dangling symlink, which fails more
-# confusingly than a missing one because it looks installed.
+# --- Check the machine ---
+# setup.sh installs nothing: the CLI uses the Python standard library only. It
+# checks python3, reminds you about the API key and looks for ImageMagick.
 "$SCRIPT_DIR/skills/imager/scripts/setup.sh"
 echo
 
@@ -48,14 +45,14 @@ for src in "$SCRIPT_DIR"/skills/*/; do
   find "$target" -mindepth 1 -maxdepth 1 -type l -exec rm -f {} +
   # Every directory SKILL.md can reference, so each one exists under the
   # rewritten path too.
-  for sub in references scripts .venv; do
+  for sub in references scripts; do
     [ -d "$src/$sub" ] && ln -sfn "$src/$sub" "$target/$sub"
   done
-  # The two YAML files are not named by SKILL.md - the CLI finds them from its
+  # The two catalogues are not named by SKILL.md - the CLI finds them from its
   # own resolved location, which lands in the source tree either way. They are
   # linked anyway so the Codex install is a complete picture of the skill, and
   # so that dropping the .resolve() in imager.py cannot silently break it.
-  for f in presets.yaml platforms.yaml; do
+  for f in presets.json platforms.json; do
     [ -f "$src/$f" ] && ln -sfn "$src/$f" "$target/$f"
   done
   chmod +x "$src"/scripts/*.sh 2>/dev/null || true
