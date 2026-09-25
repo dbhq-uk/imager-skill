@@ -495,10 +495,36 @@ def encode_image(path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-def save_image(b64_data: str, output_path: Path) -> None:
+def save_image(b64_data: str, output_path: Path, overwrite: bool = False) -> None:
+    """Write one image. Without overwrite, an existing file is an error, never a casualty."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as f:
+    with open(output_path, "wb" if overwrite else "xb") as f:
         f.write(base64.b64decode(b64_data))
+
+
+def output_paths(output_path: Path, count: int) -> tuple:
+    """(image paths, contact sheet path or None) that a run of `count` images writes."""
+    if count <= 1:
+        return [output_path], None
+    stem, suffix, parent = output_path.stem, output_path.suffix, output_path.parent
+    return [parent / f"{stem}-{i:02d}{suffix}" for i in range(1, count + 1)], parent / f"{stem}-contact{suffix}"
+
+
+def free_output_path(output_path: Path, count: int) -> Path:
+    """output_path, or the first name-2, name-3 ... whose files are all free.
+
+    A run used to write over whatever was at its output path, so every rerun to
+    the same name replaced an image that had been paid for. Now it moves aside
+    instead, the way OpenAI's own imagegen skill does, and --overwrite is the
+    explicit way back to replacing.
+    """
+    candidate, k = output_path, 1
+    while True:
+        paths, contact = output_paths(candidate, count)
+        if not any(p.exists() for p in [*paths, contact] if p):
+            return candidate
+        k += 1
+        candidate = output_path.with_name(f"{output_path.stem}-{k}{output_path.suffix}")
 
 
 def platform_fit(image_path: Path, width: int, height: int) -> None:
@@ -971,10 +997,22 @@ def set_profile(output_path) -> dict:
 # ---------- Metadata ----------
 
 
-def save_metadata(output_path: Path, entry: HistoryEntry) -> None:
+def save_metadata(output_path: Path, entry: HistoryEntry) -> Path | None:
+    """The opt-in --sidecar: the history row again, as <image>.json beside the image.
+
+    Off by default. It duplicates history.jsonl, it is easy to commit next to
+    the images by accident, and as <stem>.json it replaced any file with that
+    name - generating package.png destroyed package.json. It never overwrites
+    now, --overwrite or not: an existing .json may not be ours.
+    """
     meta_path = output_path.with_suffix(".json")
-    with meta_path.open("w") as f:
-        json.dump(asdict(entry), f, indent=2)
+    try:
+        with meta_path.open("x") as f:
+            json.dump(asdict(entry), f, indent=2)
+    except FileExistsError:
+        print(f"Warning: {meta_path} already exists, so no sidecar was written.", file=sys.stderr)
+        return None
+    return meta_path
 
 
 # ---------- Init wizard ----------
@@ -1145,6 +1183,18 @@ def cmd_generate(args):
     if output_path.suffix.lower() not in valid_suffixes[output_format]:
         output_path = output_path.with_suffix(FORMAT_SUFFIX[output_format])
 
+    # Never write over an existing file unless asked to. See free_output_path.
+    overwrite = getattr(args, "overwrite", False)
+    requested_path = output_path
+    if not overwrite:
+        output_path = free_output_path(requested_path, n)
+        if output_path != requested_path:
+            print(
+                f"Note: {requested_path} already exists, so this run writes {output_path} instead. "
+                f"Pass --overwrite to replace it.",
+                file=sys.stderr,
+            )
+
     # WHAT DID THIS SET USE LAST TIME? Adopt it unless the caller said otherwise.
     house = set_profile(output_path)
     if house["count"] and not is_draft:
@@ -1256,19 +1306,17 @@ def cmd_generate(args):
         print("Error: No images returned.", file=sys.stderr)
         sys.exit(1)
 
+    # Checked again now the images are here: the API can return a different
+    # count from the one asked for, and the request can take minutes.
+    if not overwrite:
+        output_path = free_output_path(requested_path, len(images))
+    paths, contact = output_paths(output_path, len(images))
     saved_paths = []
-    if len(images) == 1:
-        save_image(images[0], output_path)
-        saved_paths.append(output_path)
-        print(f"Saved {output_path}")
-    else:
-        stem, suffix, parent = output_path.stem, output_path.suffix, output_path.parent
-        for i, img_data in enumerate(images, 1):
-            p = parent / f"{stem}-{i:02d}{suffix}"
-            save_image(img_data, p)
-            saved_paths.append(p)
-            print(f"Saved {p}")
-        contact = parent / f"{stem}-contact{suffix}"
+    for img_data, p in zip(images, paths):
+        save_image(img_data, p, overwrite=overwrite)
+        saved_paths.append(p)
+        print(f"Saved {p}")
+    if contact:
         make_contact_sheet(saved_paths, contact)
         if contact.exists():
             print(f"Saved {contact} (contact sheet)")
@@ -1304,8 +1352,9 @@ def cmd_generate(args):
         **set_fields(saved_paths[0].resolve().parent),
     )
     save_history(entry)
-    for p in saved_paths:
-        save_metadata(p, entry)
+    if getattr(args, "sidecar", False):
+        for p in saved_paths:
+            save_metadata(p, entry)
 
     if actual is not None:
         drift = ""
@@ -1346,6 +1395,8 @@ def cmd_again(args):
     args.draft = False
     args.yes = False
     args.output = None
+    args.overwrite = False
+    args.sidecar = False
     cmd_generate(args)
 
 
@@ -1504,6 +1555,12 @@ def main():
     gen_parser.add_argument("--estimate", action="store_true", help="Show cost estimate only")
     gen_parser.add_argument("--draft", action="store_true", help="Draft mode: low quality, ~$0.006/image")
     gen_parser.add_argument("-y", "--yes", action="store_true", help="Skip cost confirmation prompt")
+    gen_parser.add_argument(
+        "--overwrite", action="store_true", help="Replace an existing output file (default: write name-2, name-3 ...)"
+    )
+    gen_parser.add_argument(
+        "--sidecar", action="store_true", help="Also write <image>.json with the run's record (never overwrites)"
+    )
 
     sub.add_parser("again", help="Re-run last generation")
 
