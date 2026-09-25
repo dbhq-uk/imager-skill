@@ -15,15 +15,28 @@ repo would catch it.
 
 from __future__ import annotations
 
+import argparse
+import base64
+import contextlib
+import io
 import json
 import os
+import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+
+# Set before the import, so the module never resolves the real settings
+# directory and nothing here can read or write the owner's history.
+_IMPORT_HOME = tempfile.TemporaryDirectory()
+os.environ["GPT_IMAGE_HOME"] = _IMPORT_HOME.name
 
 import imager  # noqa: E402
 
@@ -33,6 +46,98 @@ SCRIPT = Path(__file__).parent.parent / "scripts" / "imager.py"
 # have to run against an empty one. Without this they pass or fail depending on
 # what the machine's owner happened to generate into the working directory.
 _CLI_HOME = tempfile.TemporaryDirectory()
+
+
+def tiny_png(width: int = 4, height: int = 4) -> bytes:
+    """A real, valid PNG of the given size, so ImageMagick can read what a fake API returns."""
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    raw = b"".join(b"\x00" + b"\xff\x80\x00" * width for _ in range(height))
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+
+class IsolatedHome(unittest.TestCase):
+    """Points config, history and the last-run record at a fresh temp directory."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self._saved = (imager.CONFIG_DIR, imager.CONFIG_FILE, imager.HISTORY_FILE, imager.LAST_RUN_FILE)
+        home = self.root / "settings"
+        imager.CONFIG_DIR = home
+        imager.CONFIG_FILE = home / "config.yaml"
+        imager.HISTORY_FILE = home / "history.jsonl"
+        imager.LAST_RUN_FILE = home / "last.json"
+
+    def tearDown(self):
+        (imager.CONFIG_DIR, imager.CONFIG_FILE, imager.HISTORY_FILE, imager.LAST_RUN_FILE) = self._saved
+        self.tmp.cleanup()
+
+    def generate(self, *argv: str, png: bytes | None = None, usage: dict | None = None):
+        """Run the real CLI in-process with the API replaced by a fake.
+
+        Returns (exit code, stdout, stderr, the keyword arguments the fake
+        received). Nothing leaves the machine: api_request is the only function
+        that calls out, and it is the thing replaced.
+        """
+        calls: list = []
+        image = base64.b64encode(png or tiny_png()).decode()
+
+        def fake_api_request(**kwargs):
+            calls.append(kwargs)
+            return [image] * kwargs.get("n", 1), (usage if usage is not None else {})
+
+        out, err, code = io.StringIO(), io.StringIO(), 0
+        # ExitStack rather than a parenthesised with: the floor is Python 3.9.
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(imager, "api_request", side_effect=fake_api_request))
+            stack.enter_context(mock.patch.object(sys, "argv", ["imager.py", *argv]))
+            stack.enter_context(mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key-not-real"}))
+            stack.enter_context(contextlib.redirect_stdout(out))
+            stack.enter_context(contextlib.redirect_stderr(err))
+            try:
+                imager.main()
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+        return code, out.getvalue(), err.getvalue(), calls
+
+    def history_rows(self) -> list:
+        if not imager.HISTORY_FILE.exists():
+            return []
+        return [json.loads(line) for line in imager.HISTORY_FILE.read_text().splitlines() if line.strip()]
+
+
+def git(*args: str, cwd: Path) -> str:
+    """Run git with a throwaway identity, so the suite works on a runner with no git config."""
+    result = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=imager tests",
+            "-c",
+            "user.email=tests@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "init.defaultBranch=main",
+            *args,
+        ],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def make_repo(path: Path) -> Path:
+    path.mkdir(parents=True)
+    git("init", "-q", cwd=path)
+    git("commit", "-q", "--allow-empty", "-m", "init", cwd=path)
+    return path
 
 
 def run_cli(*args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
@@ -617,6 +722,75 @@ class TestDirMatches(unittest.TestCase):
 
     def test_a_relative_path_longer_than_the_target_does_not_match(self):
         self.assertFalse(imager.dir_matches("a/b/c/d/e", "/x/y"))
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class TestSetIdentityAcrossWorktrees(IsolatedHome):
+    """A set is a folder in a repository, not an absolute path.
+
+    Every worktree of a repository puts the same folder at a different absolute
+    path, and a worktree made for one session is gone by the next. Keyed on the
+    absolute path, a set made in one worktree was a brand new set in the next,
+    which is the mistake set-check exists to prevent.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.main = make_repo(self.root / "main")
+        git("worktree", "add", "-q", str(self.root / "wt"), cwd=self.main)
+        self.wt = self.root / "wt"
+
+    def test_a_set_made_in_one_worktree_is_found_from_another(self):
+        code, _, err, _ = self.generate("--quality", "medium", "a subject", str(self.main / "images" / "a.png"))
+        self.assertEqual(code, 0, err)
+        profile = imager.set_profile(self.wt / "images" / "b.png")
+        self.assertEqual(profile["count"], 1)
+        self.assertEqual(profile["quality"], "medium")
+
+    def test_set_check_in_a_second_worktree_reports_the_first(self):
+        self.generate("--quality", "medium", "a subject", str(self.main / "images" / "a.png"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            imager.cmd_set_check(argparse.Namespace(path=str(self.wt / "images"), n=10))
+        self.assertIn("1 image(s) previously made at quality=medium", out.getvalue())
+
+    def test_new_rows_carry_the_repository_and_the_relative_directory(self):
+        self.generate("a subject", str(self.wt / "art" / "notes" / "a.png"))
+        row = self.history_rows()[-1]
+        self.assertEqual(row["repo"], str((self.main / ".git").resolve()))
+        self.assertEqual(row["repo_dir"], "art/notes")
+
+    def test_a_generation_in_the_worktree_adopts_the_set_tier(self):
+        self.generate("--quality", "medium", "a subject", str(self.main / "images" / "a.png"))
+        code, out, err, calls = self.generate("--dry-run", "another subject", str(self.wt / "images" / "b.png"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("Quality:   medium", out)
+        self.assertIn("Matching the set", err)
+
+    def test_a_row_written_before_the_key_existed_is_still_found(self):
+        # Rows from before this change hold only an absolute directory. When
+        # that directory still exists, its repository can be worked out.
+        (self.main / "images").mkdir()
+        imager.ensure_config_dir()
+        row = {"model": "gpt-image-2", "quality": "low", "n": 2, "output_dir": str(self.main / "images")}
+        imager.HISTORY_FILE.write_text(json.dumps(row) + "\n")
+        profile = imager.set_profile(self.wt / "images" / "b.png")
+        self.assertEqual(profile["count"], 2)
+        self.assertEqual(profile["quality"], "low")
+
+    def test_the_same_folder_name_in_another_repository_is_another_set(self):
+        other = make_repo(self.root / "other")
+        self.generate("--quality", "medium", "a subject", str(other / "images" / "a.png"))
+        self.assertEqual(imager.set_profile(self.wt / "images" / "b.png")["count"], 0)
+
+    def test_another_folder_in_the_same_repository_is_another_set(self):
+        self.generate("--quality", "medium", "a subject", str(self.main / "images" / "a.png"))
+        self.assertEqual(imager.set_profile(self.wt / "other-images" / "b.png")["count"], 0)
+
+    def test_outside_git_there_is_no_key(self):
+        plain = self.root / "plain"
+        plain.mkdir()
+        self.assertIsNone(imager.set_key(plain))
 
 
 class TestCli(unittest.TestCase):

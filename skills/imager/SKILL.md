@@ -24,6 +24,10 @@ The CLI does this for you: if the output path lands in a directory the history h
 adopts that model and quality and says so. Pass `--model` or `--quality` to override and it
 warns instead.
 
+A set is a folder in a repository, not an absolute path. Inside git, the history records the
+repository and the folder's path from its top level, so the same `images/` folder in another
+worktree of the repository is the same set. Outside git, the absolute path is all there is.
+
 **A batch script that calls the API directly gets none of that protection.** If you are writing
 one, read the history yourself:
 
