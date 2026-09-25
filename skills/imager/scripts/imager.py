@@ -105,7 +105,8 @@ def ensure_config_dir() -> None:
 # sibling - slower, better on fine detail, dense text and multi-turn edits.
 #
 # gpt-image-2 stays selectable and is NOT deprecated: it is the replacement
-# target for gpt-image-1, 1.5 and 1-mini, which leave the API on 1 Dec 2026.
+# target for gpt-image-1 (leaves the API on 23 Oct 2026) and for 1.5 and
+# 1-mini (1 Dec 2026).
 # Keep it for adding to a set that was generated on it (see set-check), and for
 # Batch API runs - the 50% batch discount covers gpt-image-2 and not the 2.5s.
 
