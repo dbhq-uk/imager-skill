@@ -373,8 +373,9 @@ Requires `OPENAI_API_KEY` in the environment. Use `--provider openrouter` with
 A moderation block comes back as `error.code = "moderation_blocked"` with a
 `moderation_details` object naming the stage (`input` or `output`) and coarse categories. The
 CLI reports both and does **not** retry - a refusal retried four times is the same refusal, four
-times slower. Change the prompt or the input images. If the subject is legitimate,
-`--moderation low` is the less restrictive filter.
+times slower. Change the prompt or the input images. If the subject is legitimate and it was a
+generation, `--moderation low` is the less restrictive filter. Edits and `--reference` runs have
+no moderation setting, and the CLI refuses `--moderation` on them.
 
 ## Files
 

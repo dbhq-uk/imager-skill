@@ -547,12 +547,16 @@ def _build_multipart(fields: list) -> tuple:
     return body, content_type
 
 
-def describe_api_error(body: str) -> tuple:
+def describe_api_error(body: str, is_edit: bool = False) -> tuple:
     """(human message, is it worth retrying).
 
     A blocked prompt and a transient failure look the same to anything reading
     only the status code, and retrying a refusal four times just spends four
     times as long arriving at the same refusal.
+
+    The --moderation hint is for generations only. The edit endpoint has no
+    moderation field, so suggesting it for a blocked edit sends the user to a
+    flag that cannot help.
     """
     try:
         error = (json.loads(body) or {}).get("error") or {}
@@ -565,10 +569,13 @@ def describe_api_error(body: str) -> tuple:
         details = error.get("moderation_details") or {}
         stage = details.get("moderation_stage", "unknown")
         categories = ", ".join(details.get("categories") or []) or "unspecified"
+        if is_edit:
+            hint = "Edits have no moderation setting, so the prompt or the input images are what to change."
+        else:
+            hint = "If the subject is legitimate, --moderation low is the less restrictive setting."
         return (
             f"Moderation blocked this request at the {stage} stage ({categories}). "
-            f"Change the prompt or the input images - retrying as-is will not help. "
-            f"If the subject is legitimate, --moderation low is the less restrictive setting.",
+            f"Change the prompt or the input images - retrying as-is will not help. {hint}",
             False,
         )
     if etype == "image_generation_user_error":
@@ -615,8 +622,8 @@ def api_request(
                 fields.append(("output_format", output_format, None))
             if output_compression is not None:
                 fields.append(("output_compression", str(output_compression), None))
-            if moderation:
-                fields.append(("moderation", moderation, None))
+            # No moderation field: CreateImageEditRequest does not have one, and
+            # main() refuses --moderation on an edit rather than drop it.
             if edit_image:
                 with open(edit_image, "rb") as f:
                     fields.append(("image[]", f.read(), Path(edit_image).name))
@@ -671,7 +678,7 @@ def api_request(
                 return images, (result.get("usage") or {})
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8", errors="replace") if e.fp else ""
-            message, retryable = describe_api_error(error_body)
+            message, retryable = describe_api_error(error_body, is_edit)
             if retryable and (e.code == 429 or e.code >= 500):
                 if attempt < max_retries - 1:
                     wait = 2 ** (attempt + 1)
@@ -1517,6 +1524,17 @@ def main():
         if args.mask and not args.edit:
             print(
                 "Error: --mask needs --edit: the mask says which part of that image to replace.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if args.moderation and (args.edit or args.reference or args.mask):
+            # A flag that does not reach the wire must error rather than be
+            # dropped (AGENTS.md, constraint 4). Edits and reference runs go to
+            # the edit endpoint, and CreateImageEditRequest has no moderation.
+            print(
+                "Error: --moderation applies to generations only. --edit and --reference use the "
+                "edit endpoint, which has no moderation setting. Drop the flag, or change the "
+                "prompt or the input images if an edit was blocked.",
                 file=sys.stderr,
             )
             sys.exit(1)

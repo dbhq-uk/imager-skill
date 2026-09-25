@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.request
 import zlib
 from pathlib import Path
 from unittest import mock
@@ -394,6 +395,27 @@ class TestApiErrors(unittest.TestCase):
         self.assertIn("input", message)
         self.assertIn("violence", message)
 
+    BLOCKED = json.dumps(
+        {
+            "error": {
+                "type": "image_generation_user_error",
+                "code": "moderation_blocked",
+                "moderation_details": {"moderation_stage": "input", "categories": ["violence"]},
+            }
+        }
+    )
+
+    def test_a_blocked_generation_suggests_moderation_low(self):
+        message, _ = imager.describe_api_error(self.BLOCKED)
+        self.assertIn("--moderation low", message)
+
+    def test_a_blocked_edit_does_not_suggest_moderation_low(self):
+        # The edit endpoint has no moderation field, so the flag cannot help.
+        message, retryable = imager.describe_api_error(self.BLOCKED, is_edit=True)
+        self.assertNotIn("--moderation low", message)
+        self.assertIn("Edits have no moderation setting", message)
+        self.assertFalse(retryable)
+
     def test_user_error_is_not_retryable(self):
         body = json.dumps({"error": {"type": "image_generation_user_error", "code": "bad_prompt", "message": "no"}})
         _, retryable = imager.describe_api_error(body)
@@ -408,6 +430,51 @@ class TestApiErrors(unittest.TestCase):
         message, retryable = imager.describe_api_error("<html>502</html>")
         self.assertTrue(retryable)
         self.assertIn("502", message)
+
+
+class FakeResponse:
+    """Stands in for what urlopen returns, so a request can be built and read without sending it."""
+
+    def __init__(self, payload: dict):
+        self._body = json.dumps(payload).encode()
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def capture_request(**kwargs) -> urllib.request.Request:
+    """Call api_request with urlopen replaced, and return the Request it would have sent."""
+    sent: list = []
+
+    def fake_urlopen(request, timeout=None):
+        sent.append(request)
+        return FakeResponse({"data": [{"b64_json": base64.b64encode(tiny_png()).decode()}], "usage": {}})
+
+    with mock.patch.object(imager.urllib.request, "urlopen", side_effect=fake_urlopen):
+        imager.api_request(provider="openai", api_key="test-key-not-real", **kwargs)
+    return sent[0]
+
+
+class TestWire(unittest.TestCase):
+    """What goes in the request body. Nothing is sent: urlopen is replaced."""
+
+    def test_an_edit_never_carries_a_moderation_field(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            photo = Path(tmp) / "photo.png"
+            photo.write_bytes(tiny_png())
+            request = capture_request(prompt="make it blue", edit_image=str(photo), moderation="low")
+        self.assertTrue(request.full_url.endswith("/images/edits"))
+        self.assertNotIn(b'name="moderation"', request.data)
+
+    def test_a_generation_still_carries_moderation(self):
+        request = capture_request(prompt="a subject", moderation="low")
+        self.assertEqual(json.loads(request.data)["moderation"], "low")
 
 
 class TestPresetsFile(unittest.TestCase):
@@ -944,6 +1011,22 @@ class TestCli(unittest.TestCase):
         result = run_cli("--dry-run", "--mask", "m.png", "a subject")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--mask needs --edit", result.stderr)
+
+    def test_moderation_with_edit_is_rejected(self):
+        # The edit endpoint has no moderation field. Sending it anyway broke the
+        # rule that a flag either reaches the wire or errors.
+        result = run_cli("--dry-run", "--edit", "photo.png", "--moderation", "low", "a subject")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--moderation applies to generations only", result.stderr)
+
+    def test_moderation_with_reference_is_rejected(self):
+        result = run_cli("--dry-run", "--reference", "face.png", "--moderation", "low", "a subject")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--moderation applies to generations only", result.stderr)
+
+    def test_moderation_on_a_generation_is_still_accepted(self):
+        result = run_cli("--dry-run", "--moderation", "low", "a subject")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_seed_fails_loudly_rather_than_being_ignored(self):
         # The whole point: a script still passing --seed believes composition
