@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import statistics
+import struct
 import subprocess
 import sys
 import time
@@ -590,14 +591,79 @@ def run_imagemagick(command: list, what: str) -> bool:
     return True
 
 
+def imagemagick(tool: str) -> list | None:
+    """The command that runs an ImageMagick tool, on version 7 or 6, or None.
+
+    ImageMagick 7 ships one binary, `magick`, which does what `convert` did and
+    takes `montage` as a subcommand. ImageMagick 6 - which is what
+    `apt install imagemagick` gives on Ubuntu 24.04, and what init and setup.sh
+    tell Linux users to run - has `convert` and `montage` and no `magick`. Only
+    `magick` used to be probed, so on IM6 every platform fit and contact sheet
+    was skipped. The arguments this file passes mean the same to both.
+    """
+    if shutil.which("magick"):
+        return ["magick"] if tool == "convert" else ["magick", tool]
+    if shutil.which(tool):
+        return [tool]
+    return None
+
+
+def image_size(path: Path) -> tuple | None:
+    """(width, height) from the file's own header - PNG, JPEG or WebP - or None.
+
+    Read directly rather than through ImageMagick, because the case that needs
+    it is the one where ImageMagick is missing or has just failed.
+    """
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR":
+            return struct.unpack(">II", data[16:24])
+        if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            kind = data[12:16]
+            if kind == b"VP8X":
+                return (1 + int.from_bytes(data[24:27], "little"), 1 + int.from_bytes(data[27:30], "little"))
+            if kind == b"VP8 ":
+                w, h = struct.unpack("<HH", data[26:30])
+                return (w & 0x3FFF, h & 0x3FFF)
+            if kind == b"VP8L":
+                bits = int.from_bytes(data[21:25], "little")
+                return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+            return None
+        if data[:2] == b"\xff\xd8":
+            i = 2
+            while i + 9 <= len(data):
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                marker = data[i + 1]
+                if marker == 0xFF or marker in (0x01, 0xD8) or 0xD0 <= marker <= 0xD7:
+                    i += 1 if marker == 0xFF else 2
+                    continue
+                # Start-of-frame markers carry the size; C4, C8 and CC are not frames.
+                if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                    h, w = struct.unpack(">HH", data[i + 5 : i + 9])
+                    return (w, h)
+                i += 2 + struct.unpack(">H", data[i + 2 : i + 4])[0]
+    except struct.error:
+        return None
+    return None
+
+
 def platform_fit(image_path: Path, width: int, height: int) -> bool:
     """Scale and centre-crop to the platform size. True if the file was fitted."""
-    if not shutil.which("magick"):
-        print("Warning: ImageMagick not found, skipping platform resize", file=sys.stderr)
+    command = imagemagick("convert")
+    if not command:
+        print(
+            "Warning: ImageMagick not found (neither magick nor convert is on PATH), skipping platform resize",
+            file=sys.stderr,
+        )
         return False
     return run_imagemagick(
         [
-            "magick",
+            *command,
             str(image_path),
             "-resize",
             f"{width}x{height}^",
@@ -613,11 +679,15 @@ def platform_fit(image_path: Path, width: int, height: int) -> bool:
 
 def make_contact_sheet(images: list, output: Path, cols: int = 3) -> bool:
     """Tile the images into one sheet. True if the sheet was written."""
-    if not shutil.which("magick"):
-        print("Warning: ImageMagick not found, skipping contact sheet", file=sys.stderr)
+    command = imagemagick("montage")
+    if not command:
+        print(
+            "Warning: ImageMagick not found (neither magick nor montage is on PATH), skipping contact sheet",
+            file=sys.stderr,
+        )
         return False
     return run_imagemagick(
-        ["magick", "montage"] + [str(p) for p in images] + ["-geometry", "+4+4", "-tile", f"{cols}x", str(output)],
+        [*command, *[str(p) for p in images], "-geometry", "+4+4", "-tile", f"{cols}x", str(output)],
         "contact sheet",
     )
 
@@ -1109,10 +1179,13 @@ def save_metadata(output_path: Path, entry: HistoryEntry) -> Path | None:
 def cmd_init():
     print("GPT Image - Setup Wizard\n")
 
-    magick = shutil.which("magick")
-    print(f"  magick: {'OK ' + magick if magick else 'not found'}")
-    if not magick:
-        print("\n  ImageMagick not found. Platform fitting and contact sheets will be unavailable.")
+    fit, sheet = imagemagick("convert"), imagemagick("montage")
+    if fit and sheet:
+        version = "7" if fit[0] == "magick" else "6"
+        print(f"  ImageMagick {version}: OK ({' '.join(fit)}, {' '.join(sheet)})")
+    else:
+        print("  ImageMagick: not found")
+        print("\n  Platform fitting and contact sheets will be unavailable. Either version works:")
         print("  macOS: brew install imagemagick")
         print("  Linux: sudo apt install imagemagick")
 
@@ -1468,9 +1541,20 @@ def cmd_generate(args):
         print(f"Saved {contact} (contact sheet)")
 
     if platform_spec:
-        fitted = [platform_fit(p, platform_spec["width"], platform_spec["height"]) for p in saved_paths]
+        target_w, target_h = platform_spec["width"], platform_spec["height"]
+        fitted = [platform_fit(p, target_w, target_h) for p in saved_paths]
         if all(fitted):
-            print(f"  Fitted to {platform_spec['width']}x{platform_spec['height']} ({platform})")
+            print(f"  Fitted to {target_w}x{target_h} ({platform})")
+        else:
+            # Say what was actually saved. This line used to claim the fit
+            # whether or not it had happened, so a 1088x1920 file was reported
+            # as 1080x1920.
+            for p, ok in zip(saved_paths, fitted):
+                if ok:
+                    continue
+                dims = image_size(p)
+                saved = f"{dims[0]}x{dims[1]}" if dims else f"{size_label} as generated"
+                print(f"  Not fitted to {target_w}x{target_h} ({platform}): {p} is {saved}")
 
     if actual is not None:
         drift = ""

@@ -1002,6 +1002,123 @@ class TestWriteAheadLedger(IsolatedHome):
         self.assertIn("pending", out.getvalue())
 
 
+# A stand-in for ImageMagick's binaries. It logs how it was called and writes a
+# PNG header at the -extent size, which is all image_size reads.
+FAKE_IMAGEMAGICK = """#!{python}
+import pathlib, struct, sys, zlib
+args = sys.argv[1:]
+with open({log!r}, "a") as f:
+    f.write(pathlib.Path(sys.argv[0]).name + " " + " ".join(args) + "\\n")
+w, h = 64, 64
+if "-extent" in args:
+    w, h = map(int, args[args.index("-extent") + 1].split("x"))
+ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+crc = struct.pack(">I", zlib.crc32(b"IHDR" + ihdr) & 0xFFFFFFFF)
+pathlib.Path(args[-1]).write_bytes(b"\\x89PNG\\r\\n\\x1a\\n" + struct.pack(">I", 13) + b"IHDR" + ihdr + crc)
+"""
+
+
+class TestImageMagickVersions(IsolatedHome):
+    """Platform fitting and contact sheets work on ImageMagick 7 and 6, and never claim a fit that did not happen."""
+
+    STORY_AS_GENERATED = (1088, 1920)
+
+    def setUp(self):
+        super().setUp()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.log = self.root / "imagemagick.log"
+
+    def install(self, *names: str) -> None:
+        for name in names:
+            tool = self.bin / name
+            tool.write_text(FAKE_IMAGEMAGICK.format(python=sys.executable, log=str(self.log)))
+            tool.chmod(0o755)
+
+    def run_with_path(self, *argv: str):
+        # PATH holds only the fake tools, so the machine's own ImageMagick,
+        # whichever version it is, cannot answer for them.
+        with mock.patch.dict(os.environ, {"PATH": str(self.bin)}):
+            return self.generate(*argv, png=tiny_png(*self.STORY_AS_GENERATED))
+
+    def calls(self) -> list:
+        return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def test_imagemagick_6_fits_the_platform_size(self):
+        self.install("convert", "montage")
+        code, out, err, _ = self.run_with_path("a subject", str(self.root / "a.png"), "--platform", "story")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(imager.image_size(self.root / "a.png"), (1080, 1920))
+        self.assertIn("Fitted to 1080x1920 (story)", out)
+        self.assertTrue(self.calls()[0].startswith("convert "), self.calls())
+
+    def test_imagemagick_6_makes_the_contact_sheet(self):
+        self.install("convert", "montage")
+        code, out, err, _ = self.run_with_path("a subject", str(self.root / "a.png"), "--n", "2")
+        self.assertEqual(code, 0, err)
+        self.assertTrue((self.root / "a-contact.png").exists(), err)
+        self.assertTrue(any(c.startswith("montage ") for c in self.calls()), self.calls())
+
+    def test_magick_is_used_when_present(self):
+        self.install("magick", "convert", "montage")
+        with mock.patch.dict(os.environ, {"PATH": str(self.bin)}):
+            self.assertEqual(imager.imagemagick("convert"), ["magick"])
+            self.assertEqual(imager.imagemagick("montage"), ["magick", "montage"])
+
+    def test_without_imagemagick_the_output_names_the_real_size(self):
+        code, out, err, _ = self.run_with_path("a subject", str(self.root / "a.png"), "--platform", "story")
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("Fitted to", out)
+        self.assertIn("Not fitted to 1080x1920 (story)", out)
+        self.assertIn("is 1088x1920", out)
+        self.assertIn("ImageMagick not found", err)
+
+    @unittest.skipUnless(shutil.which("magick") or shutil.which("convert"), "no ImageMagick on this machine")
+    def test_the_real_imagemagick_on_this_machine_fits_the_platform_size(self):
+        code, out, err, _ = self.generate(
+            "a subject", str(self.root / "a.png"), "--platform", "story", png=tiny_png(*self.STORY_AS_GENERATED)
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(imager.image_size(self.root / "a.png"), (1080, 1920))
+
+
+class TestImageSize(unittest.TestCase):
+    """The saved size is read from the file, because the case that needs it is ImageMagick being absent."""
+
+    SAMPLES = {
+        # 48x32 samples made with ImageMagick: baseline JPEG, and lossy, lossless and alpha WebP.
+        "jpeg": "/9j/4AAQSkZJRgABAQAAAAAAAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAAgADADAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFgEBAQEAAAAAAAAAAAAAAAAAAAgJ/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AvDPpTYAAAAAAAAAAAAAAAAAAAAAAD//Z",
+        "webp-lossy": "UklGRlAAAABXRUJQVlA4IEQAAACQAwCdASowACAAPpFGnkslo6KhpWgAsBIJZwC/3oB+AAAr98NwAP7sl4//WV/Mr+ZX++R/+N24w330dZRDy6S/IgAAAA==",
+        "webp-lossless": "UklGRhwAAABXRUJQVlA4TBAAAAAvL8AHAAfQ0v5H/wMR0f8A",
+        "webp-alpha": "UklGRnIAAABXRUJQVlA4WAoAAAAQAAAALwAAHwAAQUxQSAoAAAABB9C/iAhERP8DVlA4IEIAAABQAwCdASowACAAPpFGnkslo6KhpWgAsBIJZwDO3oAAK/fDcAD+7qY//2LOWwLx//7nA/7nA/7nA/jbB+29aoAAAAA=",
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_png(self):
+        path = self.root / "a.png"
+        path.write_bytes(tiny_png(1088, 16))
+        self.assertEqual(imager.image_size(path), (1088, 16))
+
+    def test_jpeg_and_webp(self):
+        for name, data in self.SAMPLES.items():
+            with self.subTest(sample=name):
+                path = self.root / name
+                path.write_bytes(base64.b64decode(data))
+                self.assertEqual(imager.image_size(path), (48, 32))
+
+    def test_anything_else_is_unknown(self):
+        path = self.root / "a.txt"
+        path.write_bytes(b"not an image")
+        self.assertIsNone(imager.image_size(path))
+        self.assertIsNone(imager.image_size(self.root / "missing.png"))
+
+
 class TestDraftSize(IsolatedHome):
     def test_draft_honours_the_config_size(self):
         imager.ensure_config_dir()
