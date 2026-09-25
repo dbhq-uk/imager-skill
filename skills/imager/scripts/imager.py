@@ -1090,7 +1090,11 @@ def cmd_generate(args):
     # Generate at the platform's own aspect rather than generating a square and
     # cropping it. A crop discards pixels that were paid for and re-frames the
     # image after the model has already composed it.
-    size = None if is_draft else size_for(args.size or config.get("size"), platform_spec)
+    #
+    # Drafts too. A draft is where the composition gets approved, so a draft at
+    # a different aspect from the final approves a picture that will never be
+    # made. There is no saving in dropping the size: non-square costs less.
+    size = size_for(args.size or config.get("size"), platform_spec)
 
     output_format = args.output_format or "png"
     background = args.background
