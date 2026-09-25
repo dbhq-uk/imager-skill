@@ -71,9 +71,15 @@ else
     echo "      export OPENAI_API_KEY=sk-..."
 fi
 
-if ! command -v magick &>/dev/null; then
+# Version 7 is one `magick` binary; version 6 (what apt installs on Ubuntu
+# 24.04) is `convert` and `montage`. The CLI uses whichever is there.
+if command -v magick &>/dev/null; then
+    ok "ImageMagick 7 found"
+elif command -v convert &>/dev/null && command -v montage &>/dev/null; then
+    ok "ImageMagick 6 found"
+else
     warn "ImageMagick not found (optional)"
-    echo "    Needed for platform resizing and carousel contact sheets."
+    echo "    Needed for platform resizing and carousel contact sheets. Version 6 or 7."
     echo "    macOS: brew install imagemagick"
     echo "    Linux: sudo apt install imagemagick"
 fi

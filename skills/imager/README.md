@@ -60,7 +60,9 @@ estimate. Both now fail with an error explaining what to use instead - the promp
 
 ## Optional Dependencies
 
-- **ImageMagick** (`magick` on PATH) - required for platform fitting and contact sheets
+- **ImageMagick** 7 (`magick`) or 6 (`convert` and `montage`) on PATH - required for platform
+  fitting and contact sheets. Without it the image is saved at its generated size, and the CLI
+  says so
   - macOS: `brew install imagemagick`
   - Linux: `sudo apt install imagemagick`
 
