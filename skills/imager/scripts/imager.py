@@ -14,6 +14,7 @@ Usage:
     imager.py again                   # regenerate last
     imager.py history [-n 10]         # show history
     imager.py set-check <dir>         # what did this set use?
+    imager.py batch runs.jsonl        # many images, one price, one confirmation
     imager.py list-models
     imager.py list-presets
     imager.py list-platforms
@@ -30,10 +31,12 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -257,6 +260,10 @@ MEASURED_MIN_SAMPLES = 3
 MEASURED_WINDOW = 20
 
 CONFIRM_THRESHOLD = 0.50
+
+# Exit codes a script can act on. 1 is any error.
+EXIT_CANCELLED = 3
+EXIT_OVER_CAP = 4
 
 # A DAY'S SPEND, NOT A CALL'S. CONFIRM_THRESHOLD is per invocation, so a script
 # that calls this once per image never trips it: 2,000 separate images at $0.21
@@ -1055,9 +1062,13 @@ def append_history(entry: HistoryEntry) -> None:
         os.close(fd)
 
 
+# A batch saves from several threads at once, and last.json is rewritten whole.
+_LAST_RUN_LOCK = threading.Lock()
+
+
 def save_last_run(entry: HistoryEntry) -> None:
     ensure_config_dir()
-    with LAST_RUN_FILE.open("w") as f:
+    with _LAST_RUN_LOCK, LAST_RUN_FILE.open("w") as f:
         json.dump(asdict(entry), f, indent=2)
 
 
@@ -1377,9 +1388,283 @@ def cmd_list_platforms():
 # ---------- Main generate ----------
 
 
-def cmd_generate(args):
-    config = load_config()
-    provider = check_provider(args.provider or config.get("provider", "openai"))
+@dataclass
+class Job:
+    """One request, fully resolved and priced. The API key is not part of it."""
+
+    user_prompt: str
+    prompt: str
+    preset: str | None
+    platform: str | None
+    platform_spec: dict | None
+    provider: str
+    model: str
+    quality: str
+    size: str | None
+    background: str | None
+    output_format: str
+    output_compression: int | None
+    moderation: str | None
+    n: int
+    edit: str | None
+    reference: list | None
+    mask: str | None
+    project: str | None
+    requested_path: Path
+    output_path: Path
+    overwrite: bool
+    sidecar: bool
+    inputs: int
+    per: float = 0.0
+    basis: str = ""
+
+    @property
+    def size_label(self) -> str:
+        return self.size or "auto"
+
+
+def input_count(edit: str | None, reference: list | None, mask: str | None) -> int:
+    """How many images go in. Each is billed as input, once per image that comes out."""
+    return (1 if edit else 0) + len(reference or []) + (1 if mask else 0)
+
+
+def missing_inputs(edit: str | None, reference: list | None, mask: str | None) -> list:
+    return [p for p in [edit, *(reference or []), mask] if p and not Path(p).is_file()]
+
+
+def match_set(
+    output_path: Path,
+    model: str,
+    quality: str,
+    explicit_model: bool,
+    explicit_quality: bool,
+    size_label: str,
+    inputs: int,
+    prompt: str,
+) -> tuple:
+    """(model, quality) after matching the set output_path is going into.
+
+    WHAT DID THIS SET USE LAST TIME? Adopt it unless the caller said otherwise,
+    and say so - with the price per image before and after when it changes.
+    """
+    asked_model, asked_quality = model, quality
+    house = set_profile(output_path)
+    if not house["count"]:
+        return model, quality
+    if not explicit_quality and house["quality"] and house["quality"] != quality:
+        print(
+            f"Matching the set: {output_path.parent} already holds {house['count']} image(s) "
+            f"made at quality={house['quality']}. Pass --quality to override.",
+            file=sys.stderr,
+        )
+        quality = house["quality"]
+    elif explicit_quality and house["quality"] and quality != house["quality"]:
+        asked_per = cost_per_unit(model, quality, size_label, inputs, prompt)[0]
+        house_per = cost_per_unit(model, house["quality"], size_label, inputs, prompt)[0]
+        print(
+            f"Warning: {output_path.parent} already holds {house['count']} image(s) made at "
+            f"quality={house['quality']}, and you asked for {quality} (${asked_per:.3f}/image "
+            f"against ${house_per:.3f} at the set's tier). A set that does not match itself is "
+            f"the defect this warning exists for.",
+            file=sys.stderr,
+        )
+    if not explicit_model and house["model"] and house["model"] != model:
+        print(
+            f"Matching the set: it was generated on {house['model']}. A set that is half one "
+            f"model and half another does not read as one set. Pass --model to override.",
+            file=sys.stderr,
+        )
+        model = house["model"]
+        if quality not in MODELS[model]["qualities"]:
+            quality = "high"
+    elif explicit_model and house["model"] and model != house["model"]:
+        print(
+            f"Warning: that set was generated on {house['model']}, and you asked for {model}.",
+            file=sys.stderr,
+        )
+    if (model, quality) != (asked_model, asked_quality):
+        # Matching the set can move the price a long way in either
+        # direction - one earlier high image in a folder makes every
+        # unflagged write there high - so the change is priced out loud.
+        before = cost_per_unit(asked_model, asked_quality, size_label, inputs, prompt)[0]
+        after = cost_per_unit(model, quality, size_label, inputs, prompt)[0]
+        change = f", {after / before:.1f}x" if before else ""
+        print(
+            f"  Price per image: ${before:.3f} at {asked_model} quality={asked_quality} -> "
+            f"${after:.3f} at the set's {model} quality={quality}{change}.",
+            file=sys.stderr,
+        )
+    return model, quality
+
+
+def enforce_daily_cap(config: dict, adding: float) -> None:
+    """Stop, whatever -y says, if this run would take today's spend over daily_cap.
+
+    The per-call gate cannot see a loop of cheap calls and the daily warning
+    only warns. daily_cap in config.yaml is the one limit that holds: -y does
+    not bypass it, and neither does batch.
+    """
+    cap = config.get("daily_cap")
+    if cap is None:
+        return
+    try:
+        cap = float(cap)
+    except (TypeError, ValueError):
+        print(f"Error: daily_cap in {CONFIG_FILE} must be a number of dollars, not {cap!r}.", file=sys.stderr)
+        sys.exit(1)
+    already = spend_today()
+    if already + adding > cap:
+        print(
+            f"Error: this run would take today's spend to ${already + adding:.2f}, over the daily_cap "
+            f"of ${cap:.2f} in {CONFIG_FILE}. Nothing was sent, and -y does not bypass the cap. "
+            f"Wait until tomorrow, make the run smaller, or raise daily_cap.",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_OVER_CAP)
+
+
+def warn_daily(adding: float) -> None:
+    already = spend_today()
+    if already + adding >= DAILY_WARN:
+        print(
+            f"Warning: ${already:.2f} already spent through this skill today; this call adds "
+            f"${adding:.2f}. Per-call confirmation does not see a batch - check that the "
+            f"quality tier is the one this set needs.",
+            file=sys.stderr,
+        )
+
+
+def run_request(job: Job, api_key: str) -> dict:
+    """Send one request, save what comes back, and record it. Returns what was saved and billed.
+
+    WRITE-AHEAD. The history row goes down before the request is sent, at the
+    estimate, and the final row replaces it once the images are saved. A
+    request can take minutes and an agent's shell can kill it on a timeout; a
+    record written only at the end loses every run that never reached the end,
+    and some of those were billed. Absolute paths, always: a relative "."
+    recorded from one directory would match every other directory the CLI is
+    later run from, and set_profile would hand back some unrelated folder's
+    house tier.
+    """
+    started = time.monotonic()
+    output_path = job.output_path
+    pending = HistoryEntry(
+        timestamp=datetime.now().isoformat(),
+        prompt=job.user_prompt,
+        preset=job.preset,
+        platform=job.platform,
+        model=job.model,
+        quality=job.quality,
+        size=job.size_label,
+        background=job.background,
+        output_format=job.output_format,
+        provider=job.provider,
+        n=job.n,
+        output=str(output_path.resolve()),
+        output_dir=str(output_path.resolve().parent),
+        project=job.project,
+        estimated_cost=job.per * job.n,
+        inputs=job.inputs,
+        actual_cost=None,
+        usage=None,
+        **set_fields(output_path.resolve().parent),
+        id=uuid.uuid4().hex,
+        status="pending",
+    )
+    append_history(pending)
+
+    try:
+        images, usage = api_request(
+            prompt=job.prompt,
+            provider=job.provider,
+            api_key=api_key,
+            model=job.model,
+            size=job.size,
+            quality=job.quality,
+            n=job.n,
+            edit_image=job.edit,
+            reference_images=job.reference,
+            mask=job.mask,
+            background=job.background,
+            output_format=job.output_format,
+            output_compression=job.output_compression,
+            moderation=job.moderation,
+        )
+        if not images:
+            print("Error: No images returned.", file=sys.stderr)
+            sys.exit(1)
+    except SystemExit:
+        # The API answered with an error, or with nothing. Recorded as failed,
+        # so the day's total does not carry an image that never came back.
+        append_history(replace(pending, status="failed", duration_s=round(time.monotonic() - started, 1)))
+        raise
+
+    # Checked again now the images are here: the API can return a different
+    # count from the one asked for, and the request can take minutes.
+    if not job.overwrite:
+        output_path = free_output_path(job.requested_path, len(images))
+    paths, contact = output_paths(output_path, len(images))
+    saved_paths = []
+    for img_data, p in zip(images, paths):
+        save_image(img_data, p, overwrite=job.overwrite)
+        saved_paths.append(p)
+        print(f"Saved {p}")
+
+    # The final row, written before any post-processing, so nothing that can
+    # go wrong in ImageMagick can lose the record of what was billed.
+    estimated = job.per * len(images)
+    actual = cost_from_usage(job.model, usage)
+    entry = replace(
+        pending,
+        n=len(images),
+        output=str(saved_paths[0].resolve()),
+        output_dir=str(saved_paths[0].resolve().parent),
+        estimated_cost=estimated,
+        actual_cost=actual,
+        usage=usage or None,
+        **set_fields(saved_paths[0].resolve().parent),
+        status="complete",
+        duration_s=round(time.monotonic() - started, 1),
+    )
+    save_history(entry)
+    if job.sidecar:
+        for p in saved_paths:
+            save_metadata(p, entry)
+
+    if contact and make_contact_sheet(saved_paths, contact) and contact.exists():
+        print(f"Saved {contact} (contact sheet)")
+
+    if job.platform_spec:
+        target_w, target_h = job.platform_spec["width"], job.platform_spec["height"]
+        fitted = [platform_fit(p, target_w, target_h) for p in saved_paths]
+        if all(fitted):
+            print(f"  Fitted to {target_w}x{target_h} ({job.platform})")
+        else:
+            # Say what was actually saved. This line used to claim the fit
+            # whether or not it had happened, so a 1088x1920 file was reported
+            # as 1080x1920.
+            for p, ok in zip(saved_paths, fitted):
+                if ok:
+                    continue
+                dims = image_size(p)
+                saved = f"{dims[0]}x{dims[1]}" if dims else f"{job.size_label} as generated"
+                print(f"  Not fitted to {target_w}x{target_h} ({job.platform}): {p} is {saved}")
+
+    return {"paths": saved_paths, "estimated": estimated, "actual": actual}
+
+
+def report_billed(result: dict) -> None:
+    actual, estimated = result["actual"], result["estimated"]
+    if actual is not None:
+        drift = ""
+        if estimated and abs(actual - estimated) / max(estimated, 1e-9) > 0.25:
+            drift = f" (the estimate said ${estimated:.3f})"
+        print(f"  Billed: ${actual:.4f}{drift}")
+    else:
+        print(f"  Est. cost: ${estimated:.3f} (the API returned no usage block)")
+
+
+def require_api_key(provider: str) -> str:
     api_key = get_api_key(provider)
     if not api_key:
         print(f"Error: No API key found for {provider}.", file=sys.stderr)
@@ -1388,6 +1673,31 @@ def cmd_generate(args):
             file=sys.stderr,
         )
         sys.exit(1)
+    return api_key
+
+
+def check_quality(model: str, quality: str) -> None:
+    if quality not in MODELS[model]["qualities"]:
+        print(
+            f"Error: {model} does not support quality={quality}. It accepts: {', '.join(MODELS[model]['qualities'])}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+VALID_SUFFIXES = {"png": (".png",), "jpeg": (".jpg", ".jpeg"), "webp": (".webp",)}
+
+
+def output_for_format(path: Path, output_format: str) -> Path:
+    if path.suffix.lower() not in VALID_SUFFIXES[output_format]:
+        return path.with_suffix(FORMAT_SUFFIX[output_format])
+    return path
+
+
+def cmd_generate(args):
+    config = load_config()
+    provider = check_provider(args.provider or config.get("provider", "openai"))
+    api_key = require_api_key(provider)
 
     model = normalise_model(args.model or config.get("model"))
     prompt = compose_prompt(args.prompt, args.preset)
@@ -1402,12 +1712,7 @@ def cmd_generate(args):
     if is_draft:
         quality = "low"
 
-    if quality not in MODELS[model]["qualities"]:
-        print(
-            f"Error: {model} does not support quality={quality}. It accepts: {', '.join(MODELS[model]['qualities'])}.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    check_quality(model, quality)
 
     platforms = load_platforms()
     platform = None
@@ -1449,9 +1754,7 @@ def cmd_generate(args):
         slug = re.sub(r"[^a-z0-9]+", "-", args.prompt.lower()[:40]).strip("-")
         output_path = base_dir / f"{datetime.now().strftime('%Y%m%d')}-{slug}.png"
 
-    valid_suffixes = {"png": (".png",), "jpeg": (".jpg", ".jpeg"), "webp": (".webp",)}
-    if output_path.suffix.lower() not in valid_suffixes[output_format]:
-        output_path = output_path.with_suffix(FORMAT_SUFFIX[output_format])
+    output_path = output_for_format(output_path, output_format)
 
     # Never write over an existing file unless asked to. See free_output_path.
     overwrite = getattr(args, "overwrite", False)
@@ -1466,56 +1769,12 @@ def cmd_generate(args):
             )
 
     size_label = size or "auto"
-    # Every image that goes in is billed as input, once per image that comes out.
-    inputs = (1 if args.edit else 0) + len(args.reference or []) + (1 if args.mask else 0)
+    inputs = input_count(args.edit, args.reference, args.mask)
 
-    # WHAT DID THIS SET USE LAST TIME? Adopt it unless the caller said otherwise.
-    asked_model, asked_quality = model, quality
-    house = set_profile(output_path)
-    if house["count"] and not is_draft:
-        if not args.quality and house["quality"] and house["quality"] != quality:
-            print(
-                f"Matching the set: {output_path.parent} already holds {house['count']} image(s) "
-                f"made at quality={house['quality']}. Pass --quality to override.",
-                file=sys.stderr,
-            )
-            quality = house["quality"]
-        elif args.quality and house["quality"] and args.quality != house["quality"]:
-            asked_per = cost_per_unit(model, args.quality, size_label, inputs, prompt)[0]
-            house_per = cost_per_unit(model, house["quality"], size_label, inputs, prompt)[0]
-            print(
-                f"Warning: {output_path.parent} already holds {house['count']} image(s) made at "
-                f"quality={house['quality']}, and you asked for {args.quality} (${asked_per:.3f}/image "
-                f"against ${house_per:.3f} at the set's tier). A set that does not match itself is "
-                f"the defect this warning exists for.",
-                file=sys.stderr,
-            )
-        if not args.model and house["model"] and house["model"] != model:
-            print(
-                f"Matching the set: it was generated on {house['model']}. A set that is half one "
-                f"model and half another does not read as one set. Pass --model to override.",
-                file=sys.stderr,
-            )
-            model = house["model"]
-            if quality not in MODELS[model]["qualities"]:
-                quality = "high"
-        elif args.model and house["model"] and model != house["model"]:
-            print(
-                f"Warning: that set was generated on {house['model']}, and you asked for {model}.",
-                file=sys.stderr,
-            )
-        if (model, quality) != (asked_model, asked_quality):
-            # Matching the set can move the price a long way in either
-            # direction - one earlier high image in a folder makes every
-            # unflagged write there high - so the change is priced out loud.
-            before = cost_per_unit(asked_model, asked_quality, size_label, inputs, prompt)[0]
-            after = cost_per_unit(model, quality, size_label, inputs, prompt)[0]
-            change = f", {after / before:.1f}x" if before else ""
-            print(
-                f"  Price per image: ${before:.3f} at {asked_model} quality={asked_quality} -> "
-                f"${after:.3f} at the set's {model} quality={quality}{change}.",
-                file=sys.stderr,
-            )
+    if not is_draft:
+        model, quality = match_set(
+            output_path, model, quality, bool(args.model), bool(args.quality), size_label, inputs, prompt
+        )
 
     per, basis = cost_per_unit(model, quality, size_label, inputs, prompt)
     cost = per * n
@@ -1551,16 +1810,9 @@ def cmd_generate(args):
             print(f"  Via the Batch API that same run is ~${cost * BATCH_DISCOUNT:.3f} (50% off, {model}).")
         return
 
-    no_confirm = getattr(args, "yes", False)
-    already = spend_today()
-    if already + cost >= DAILY_WARN:
-        print(
-            f"Warning: ${already:.2f} already spent through this skill today; this call adds "
-            f"${cost:.2f}. Per-call confirmation does not see a batch - check that the "
-            f"quality tier is the one this set needs.",
-            file=sys.stderr,
-        )
-    if not no_confirm and cost >= CONFIRM_THRESHOLD:
+    enforce_daily_cap(config, cost)
+    warn_daily(cost)
+    if not getattr(args, "yes", False) and cost >= CONFIRM_THRESHOLD:
         print(f"Estimated cost: ${cost:.2f} ({n} x ~${per:.3f}/image, {mode_label}{inputs_label}, {basis})")
         try:
             answer = input("Proceed? [y/N] ").strip().lower()
@@ -1577,124 +1829,34 @@ def cmd_generate(args):
         file=sys.stderr,
     )
 
-    # WRITE-AHEAD. The row goes down before the request is sent, at the
-    # estimate, and the final row replaces it once the images are saved. A
-    # request can take minutes and an agent's shell can kill it on a timeout;
-    # a record written only at the end loses every run that never reached the
-    # end, and some of those were billed. Absolute paths, always: a relative
-    # "." recorded from one directory would match every other directory the
-    # CLI is later run from, and set_profile would hand back some unrelated
-    # folder's house tier.
-    started = time.monotonic()
-    pending = HistoryEntry(
-        timestamp=datetime.now().isoformat(),
-        prompt=args.prompt,
+    job = Job(
+        user_prompt=args.prompt,
+        prompt=prompt,
         preset=args.preset,
         platform=platform,
+        platform_spec=platform_spec,
+        provider=provider,
         model=model,
         quality=quality,
-        size=size_label,
+        size=size,
         background=background,
         output_format=output_format,
-        provider=provider,
+        output_compression=args.output_compression,
+        moderation=args.moderation,
         n=n,
-        output=str(output_path.resolve()),
-        output_dir=str(output_path.resolve().parent),
+        edit=args.edit,
+        reference=args.reference,
+        mask=args.mask,
         project=args.project,
-        estimated_cost=cost,
+        requested_path=requested_path,
+        output_path=output_path,
+        overwrite=overwrite,
+        sidecar=getattr(args, "sidecar", False),
         inputs=inputs,
-        actual_cost=None,
-        usage=None,
-        **set_fields(output_path.resolve().parent),
-        id=uuid.uuid4().hex,
-        status="pending",
+        per=per,
+        basis=basis,
     )
-    append_history(pending)
-
-    try:
-        images, usage = api_request(
-            prompt=prompt,
-            provider=provider,
-            api_key=api_key,
-            model=model,
-            size=size,
-            quality=quality,
-            n=n,
-            edit_image=args.edit,
-            reference_images=args.reference,
-            mask=args.mask,
-            background=background,
-            output_format=output_format,
-            output_compression=args.output_compression,
-            moderation=args.moderation,
-        )
-        if not images:
-            print("Error: No images returned.", file=sys.stderr)
-            sys.exit(1)
-    except SystemExit:
-        # The API answered with an error, or with nothing. Recorded as failed,
-        # so the day's total does not carry an image that never came back.
-        append_history(replace(pending, status="failed", duration_s=round(time.monotonic() - started, 1)))
-        raise
-
-    # Checked again now the images are here: the API can return a different
-    # count from the one asked for, and the request can take minutes.
-    if not overwrite:
-        output_path = free_output_path(requested_path, len(images))
-    paths, contact = output_paths(output_path, len(images))
-    saved_paths = []
-    for img_data, p in zip(images, paths):
-        save_image(img_data, p, overwrite=overwrite)
-        saved_paths.append(p)
-        print(f"Saved {p}")
-
-    # The final row, written before any post-processing, so nothing that can
-    # go wrong in ImageMagick can lose the record of what was billed.
-    estimated = per * len(images)
-    actual = cost_from_usage(model, usage)
-    entry = replace(
-        pending,
-        n=len(images),
-        output=str(saved_paths[0].resolve()),
-        output_dir=str(saved_paths[0].resolve().parent),
-        estimated_cost=estimated,
-        actual_cost=actual,
-        usage=usage or None,
-        **set_fields(saved_paths[0].resolve().parent),
-        status="complete",
-        duration_s=round(time.monotonic() - started, 1),
-    )
-    save_history(entry)
-    if getattr(args, "sidecar", False):
-        for p in saved_paths:
-            save_metadata(p, entry)
-
-    if contact and make_contact_sheet(saved_paths, contact) and contact.exists():
-        print(f"Saved {contact} (contact sheet)")
-
-    if platform_spec:
-        target_w, target_h = platform_spec["width"], platform_spec["height"]
-        fitted = [platform_fit(p, target_w, target_h) for p in saved_paths]
-        if all(fitted):
-            print(f"  Fitted to {target_w}x{target_h} ({platform})")
-        else:
-            # Say what was actually saved. This line used to claim the fit
-            # whether or not it had happened, so a 1088x1920 file was reported
-            # as 1080x1920.
-            for p, ok in zip(saved_paths, fitted):
-                if ok:
-                    continue
-                dims = image_size(p)
-                saved = f"{dims[0]}x{dims[1]}" if dims else f"{size_label} as generated"
-                print(f"  Not fitted to {target_w}x{target_h} ({platform}): {p} is {saved}")
-
-    if actual is not None:
-        drift = ""
-        if estimated and abs(actual - estimated) / max(estimated, 1e-9) > 0.25:
-            drift = f" (the estimate said ${estimated:.3f})"
-        print(f"  Billed: ${actual:.4f}{drift}")
-    else:
-        print(f"  Est. cost: ${estimated:.3f} (the API returned no usage block)")
+    report_billed(run_request(job, api_key))
 
 
 # ---------- Again ----------
@@ -1730,6 +1892,261 @@ def cmd_again(args):
     args.overwrite = False
     args.sidecar = False
     cmd_generate(args)
+
+
+# ---------- Batch ----------
+
+# What a batch row may say. Anything else is refused by name rather than
+# dropped: a key that is quietly ignored is a setting its author thinks applied.
+BATCH_ROW_KEYS = (
+    "prompt",
+    "output",
+    "preset",
+    "platform",
+    "size",
+    "edit",
+    "reference",
+    "mask",
+    "background",
+    "output_format",
+)
+BATCH_MAX_CONCURRENCY = 16
+# Stop starting new rows after this many failures in a row. A bad key or a
+# refused preset fails every row the same way, and costs a request each time.
+BATCH_FAILURE_LIMIT = 5
+
+
+def load_batch(path: str) -> list:
+    """The rows of a batch file, each checked. Exits with every problem listed, before anything is priced."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        print(f"Error: cannot read {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    presets, platforms = load_presets(), load_platforms()
+    rows, problems, outputs = [], [], {}
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError as e:
+            problems.append(f"line {number}: not valid JSON ({e})")
+            continue
+        if not isinstance(row, dict):
+            problems.append(f"line {number}: not a JSON object")
+            continue
+        unknown = sorted(set(row) - set(BATCH_ROW_KEYS))
+        if unknown:
+            problems.append(
+                f"line {number}: unknown key {', '.join(unknown)} (a row may carry {', '.join(BATCH_ROW_KEYS)})"
+            )
+        for key in ("prompt", "output"):
+            if not isinstance(row.get(key), str) or not row.get(key).strip():
+                problems.append(f"line {number}: '{key}' is required and must be text")
+        wrong_type = [k for k in BATCH_ROW_KEYS if k != "reference" and k in row and not isinstance(row[k], str)]
+        for key in wrong_type:
+            if key not in ("prompt", "output"):
+                problems.append(f"line {number}: '{key}' must be text")
+            row.pop(key)
+        if row.get("preset") and row["preset"] not in presets:
+            problems.append(f"line {number}: unknown preset '{row['preset']}'")
+        if row.get("platform") and row["platform"] not in platforms:
+            problems.append(f"line {number}: unknown platform '{row['platform']}'")
+        if row.get("size") and row["size"] != "auto":
+            match = re.fullmatch(r"(\d+)x(\d+)", str(row["size"]))
+            problem = size_problem(int(match.group(1)), int(match.group(2))) if match else "use WIDTHxHEIGHT"
+            if problem:
+                problems.append(f"line {number}: size {row['size']} - {problem}")
+        if row.get("output_format") and row["output_format"] not in FORMAT_SUFFIX:
+            problems.append(f"line {number}: output_format must be one of {', '.join(FORMAT_SUFFIX)}")
+        if row.get("background") and row["background"] not in ("transparent", "opaque", "auto"):
+            problems.append(f"line {number}: background must be transparent, opaque or auto")
+        reference = row.get("reference")
+        if isinstance(reference, str):
+            row["reference"] = [reference]
+        elif reference is not None and not (isinstance(reference, list) and all(isinstance(r, str) for r in reference)):
+            problems.append(f"line {number}: reference must be a path or a list of paths")
+            row["reference"] = None
+        if row.get("mask") and not row.get("edit"):
+            problems.append(f"line {number}: mask needs edit")
+        for missing in missing_inputs(row.get("edit"), row.get("reference"), row.get("mask")):
+            problems.append(f"line {number}: input file not found: {missing}")
+        if isinstance(row.get("output"), str):
+            fmt = row.get("output_format") or "png"
+            if row.get("background") == "transparent" and fmt == "jpeg":
+                fmt = "png"
+            row["output_format"] = fmt if fmt in FORMAT_SUFFIX else "png"
+            key = str(output_for_format(Path(row["output"]), row["output_format"]).resolve())
+            if key in outputs:
+                problems.append(f"line {number}: same output as line {outputs[key]}")
+            outputs.setdefault(key, number)
+        row["line"] = number
+        rows.append(row)
+    if problems:
+        print(f"Error: {path} has {len(problems)} problem(s). Nothing was sent.", file=sys.stderr)
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+        sys.exit(1)
+    if not rows:
+        print(f"Error: {path} has no rows.", file=sys.stderr)
+        sys.exit(1)
+    return rows
+
+
+def cmd_batch(args):
+    """Run a JSONL file of images through every guard a single run has, once.
+
+    THE HOLE THIS CLOSES. The per-call gate cannot see a loop of cheap calls,
+    and a script that calls the API itself gets no set check, no daily total
+    and no record. So a batch is one command: one set check per directory, one
+    total price, one confirmation, the daily cap, a history row per image, and
+    a rerun that skips every output already on disk.
+    """
+    config = load_config()
+    provider = check_provider(config.get("provider", "openai"))
+    api_key = require_api_key(provider)
+    rows = load_batch(args.file)
+    model = normalise_model(args.model or config.get("model"))
+    quality = args.quality or config.get("quality", "low")
+    check_quality(model, quality)
+    concurrency = args.concurrency
+    if not 1 <= concurrency <= BATCH_MAX_CONCURRENCY:
+        print(f"Error: --concurrency must be between 1 and {BATCH_MAX_CONCURRENCY}", file=sys.stderr)
+        sys.exit(1)
+    platforms = load_platforms()
+
+    jobs, skipped = [], []
+    for row in rows:
+        output_path = output_for_format(Path(row["output"]), row["output_format"])
+        if output_path.exists():
+            # RESUME. An output on disk is a row already paid for.
+            skipped.append(output_path)
+            continue
+        platform = row.get("platform")
+        platform_spec = platforms[platform] if platform else None
+        size = size_for(row.get("size") or config.get("size"), platform_spec)
+        jobs.append(
+            Job(
+                user_prompt=row["prompt"],
+                prompt=compose_prompt(row["prompt"], row.get("preset")),
+                preset=row.get("preset"),
+                platform=platform,
+                platform_spec=platform_spec,
+                provider=provider,
+                model=model,
+                quality=quality,
+                size=size,
+                background=row.get("background"),
+                output_format=row["output_format"],
+                output_compression=None,
+                moderation=None,
+                n=1,
+                edit=row.get("edit"),
+                reference=row.get("reference"),
+                mask=row.get("mask"),
+                project=None,
+                requested_path=output_path,
+                output_path=output_path,
+                overwrite=False,
+                sidecar=False,
+                inputs=input_count(row.get("edit"), row.get("reference"), row.get("mask")),
+            )
+        )
+
+    # One set check per directory, not per row: a set is a folder.
+    by_dir: dict = {}
+    for job in jobs:
+        by_dir.setdefault(job.output_path.resolve().parent, []).append(job)
+    for group in by_dir.values():
+        first = group[0]
+        set_model, set_quality = match_set(
+            first.output_path,
+            model,
+            quality,
+            bool(args.model),
+            bool(args.quality),
+            first.size_label,
+            first.inputs,
+            first.prompt,
+        )
+        for job in group:
+            job.model, job.quality = set_model, set_quality
+            job.per, job.basis = cost_per_unit(job.model, job.quality, job.size_label, job.inputs, job.prompt)
+
+    total = sum(job.per * job.n for job in jobs)
+    if skipped:
+        print(f"Skipping {len(skipped)} row(s) whose output already exists.")
+    if not jobs:
+        print("Nothing to do: every output in the batch already exists.")
+        return
+    if args.dry_run:
+        for directory, group in by_dir.items():
+            subtotal = sum(job.per * job.n for job in group)
+            print(
+                f"{directory}: {len(group)} image(s), {group[0].model} quality={group[0].quality}, "
+                f"${subtotal:.3f} ({', '.join(sorted({job.basis for job in group}))})"
+            )
+    print(f"Est. total: ${total:.3f} for {len(jobs)} image(s)")
+    if args.dry_run or args.estimate:
+        return
+
+    enforce_daily_cap(config, total)
+    warn_daily(total)
+    if not args.yes and total >= CONFIRM_THRESHOLD:
+        try:
+            answer = input(f"Proceed with {len(jobs)} image(s) for about ${total:.2f}? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer not in ("y", "yes"):
+            print("Cancelled. Nothing was sent.", file=sys.stderr)
+            sys.exit(EXIT_CANCELLED)
+
+    print(f"Running {len(jobs)} image(s), {concurrency} at a time...", file=sys.stderr)
+    lock = threading.Lock()
+    state = {"done": 0, "failed": 0, "in_a_row": 0, "billed": 0.0, "estimated": 0.0, "stopped": False}
+
+    def work(job: Job) -> None:
+        with lock:
+            if state["stopped"]:
+                return
+        try:
+            result = run_request(job, api_key)
+        except (SystemExit, Exception) as e:
+            # SystemExit is how api_request reports an API error, already
+            # printed. Anything else is unexpected, so it is named here rather
+            # than lost in a worker thread. Either way the row is counted and
+            # the rest carry on.
+            detail = "" if isinstance(e, SystemExit) else f": {type(e).__name__}: {e}"
+            with lock:
+                print(f"  Failed: {job.output_path}{detail}", file=sys.stderr)
+                state["failed"] += 1
+                state["in_a_row"] += 1
+                if state["in_a_row"] >= BATCH_FAILURE_LIMIT and not state["stopped"]:
+                    state["stopped"] = True
+                    print(
+                        f"Stopping: {BATCH_FAILURE_LIMIT} rows failed in a row. Fix the cause and rerun; "
+                        f"finished outputs are skipped.",
+                        file=sys.stderr,
+                    )
+            return
+        with lock:
+            state["done"] += 1
+            state["in_a_row"] = 0
+            state["estimated"] += result["estimated"]
+            state["billed"] += result["actual"] if result["actual"] is not None else result["estimated"]
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        list(pool.map(work, jobs))
+
+    not_run = len(jobs) - state["done"] - state["failed"]
+    print(
+        f"Batch finished: {state['done']} generated, {len(skipped)} skipped (already existed), "
+        f"{state['failed']} failed{f', {not_run} not started' if not_run else ''}. "
+        f"Billed ${state['billed']:.4f} (estimated ${state['estimated']:.4f})."
+    )
+    if state["failed"] or not_run:
+        sys.exit(1)
 
 
 # ---------- Set check ----------
@@ -1862,7 +2279,7 @@ def main():
 
     parser = argparse.ArgumentParser(
         description="GPT Image - OpenAI Image Generation",
-        epilog="Commands: init, list-models, list-presets, list-platforms, again, history, set-check",
+        epilog="Commands: init, list-models, list-presets, list-platforms, again, history, set-check, batch",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -1906,6 +2323,17 @@ def main():
     sub_history.add_argument("-n", type=int, default=20, help="Number of entries to show")
     sub_history.add_argument("--project", dest="history_project", help="Filter by project")
 
+    sub_batch = sub.add_parser("batch", help="Run a JSONL file of images: one set check, one price, one confirmation")
+    sub_batch.add_argument("file", help="JSONL, one image per line: prompt and output required")
+    sub_batch.add_argument("--model", help=f"Model or alias (default: {DEFAULT_MODEL}, or the set's)")
+    sub_batch.add_argument(
+        "--quality", choices=QUALITY_CHOICES, help="Quality for every row (default: the set's, or low)"
+    )
+    sub_batch.add_argument("--concurrency", type=int, default=4, help="Requests in flight at once (default 4)")
+    sub_batch.add_argument("--dry-run", action="store_true", help="Show the plan and the total without calling out")
+    sub_batch.add_argument("--estimate", action="store_true", help="Show the total only")
+    sub_batch.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation (not the daily_cap)")
+
     sub_set = sub.add_parser("set-check", help="STEP 0: what model and quality did this directory's set use?")
     sub_set.add_argument("path", help="Directory or file the images will be written to")
     sub_set.add_argument("-n", type=int, default=100, help="Batch size to cost out")
@@ -1914,7 +2342,7 @@ def main():
         parser.print_help()
         return
 
-    if sys.argv[1] not in ("again", "history", "set-check"):
+    if sys.argv[1] not in ("again", "history", "set-check", "batch"):
         args = gen_parser.parse_args()
         if not args.prompt:
             gen_parser.print_help()
@@ -1959,6 +2387,8 @@ def main():
             cmd_history(args)
         elif args.command == "set-check":
             cmd_set_check(args)
+        elif args.command == "batch":
+            cmd_batch(args)
         else:
             parser.print_help()
 

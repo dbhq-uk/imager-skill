@@ -20,6 +20,8 @@ Adapted from [glebis/claude-skills](https://github.com/glebis/claude-skills/tree
   actually billed; estimates self-calibrate from that history
 - **Set consistency:** `set-check` reads the history for a directory and matches its model and
   quality tier
+- **Batch runs:** `batch runs.jsonl` runs many images with one set check, one price and one
+  confirmation, resumes where it stopped, and honours a `daily_cap` that `-y` cannot pass
 
 ## Quick Start
 
