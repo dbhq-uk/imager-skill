@@ -109,6 +109,18 @@ $PY $GEN set-check ./assets/icons/                              # what did this 
 $PY $GEN batch runs.jsonl --dry-run                             # one plan, one total, many images
 ```
 
+### Previews and the result line
+
+A run that sends a request ends with one line of JSON: the saved `paths`, the `contact_sheet`, the `cost` and whether it was billed or estimated, and any `preview_urls`. A script or an agent reads that line rather than the prose above it. Contact sheets go to `~/.dbhq/imager/contact-sheets/`, not into the folder the images are in.
+
+On a headless machine, point `preview_command` in `~/.dbhq/imager/config.yaml` at whatever serves a file to your browser, and the CLI runs it after every save:
+
+```yaml
+preview_command: "/path/to/preview.sh {path} {name}"
+```
+
+`{path}` is the saved file. `{name}` is a file name no other run uses, so a helper that stores files by name never replaces an earlier image. The last line the command prints is the URL. There is no default, so with the key unset nothing runs. The command runs without a shell, and a preview that fails is a warning, never a lost image.
+
 ### Models
 
 | Model | When |

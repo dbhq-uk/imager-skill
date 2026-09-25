@@ -22,6 +22,11 @@ Adapted from [glebis/claude-skills](https://github.com/glebis/claude-skills/tree
   quality tier
 - **Batch runs:** `batch runs.jsonl` runs many images with one set check, one price and one
   confirmation, resumes where it stopped, and honours a `daily_cap` that `-y` cannot pass
+- **A result you can parse:** every run that sends a request ends with one JSON line of paths,
+  contact sheet, cost and preview URLs
+- **Previews on a headless machine:** set `preview_command` in `config.yaml`, for example
+  `"/path/to/preview.sh {path} {name}"`, and the CLI runs it for each saved file with a unique
+  `{name}`. Unset by default
 
 ## Quick Start
 
@@ -74,6 +79,7 @@ estimate. Both now fail with an error explaining what to use instead - the promp
 - `platforms.json` - 8 platform sizes
 - `references/api_reference.md` - full API documentation
 
-User config and history live at `~/.dbhq/imager/`. Set `GPT_IMAGE_HOME` to relocate them.
+User config, history and contact sheets live at `~/.dbhq/imager/`. Set `GPT_IMAGE_HOME` to
+relocate them.
 
 See `SKILL.md` for the full interactive workflow and CLI reference.

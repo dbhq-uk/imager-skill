@@ -106,10 +106,13 @@ it in the prompt (framing, camera, placement), or pass the approved draft as `--
 ### Step 5: Show the result
 
 1. Show the image with the Read tool.
-2. `open` and `xdg-open` do nothing on a headless machine. If the repository has a preview
-   script, run it and post the clickable URL.
-3. Report the cost the CLI printed. It is the billed figure.
-4. Offer: variants, edit further, use as a reference, or done.
+2. A run's last line is JSON: `paths`, `contact_sheet`, `cost`, `cost_source`, `preview_urls`.
+   Read paths and cost from it.
+3. `open` and `xdg-open` do nothing on a headless machine. Post each `preview_urls` URL as a
+   clickable link. The CLI fills them by running `preview_command` itself; never run a preview
+   helper by hand.
+4. Report the cost. `cost_source: billed` is what the API billed.
+5. Offer: variants, edit further, use as a reference, or done.
 
 ## Timeouts
 
@@ -234,5 +237,8 @@ the inputs. For a legitimate generation, `--moderation low` is less strict. Edit
 
 `scripts/imager.py` (the CLI), `presets.json`, `platforms.json`, `references/api_reference.md`.
 In `~/.dbhq/imager/` (or `GPT_IMAGE_HOME`): `config.yaml` (flat `key: value` defaults),
-`history.jsonl` (every run and its billed cost, written before the request and completed after)
-and `last.json` (for `again`).
+`history.jsonl` (every run and its billed cost, written before the request and completed after),
+`last.json` (for `again`) and `contact-sheets/` (the newest 50, never in the set's folder).
+
+`preview_command` in `config.yaml` (unset by default), for example
+`"/path/to/preview.sh {path} {name}"`, runs once per saved file with no shell. `{name}` is unique to the run; its last output line is the URL.
