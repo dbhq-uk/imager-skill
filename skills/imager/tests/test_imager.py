@@ -1311,6 +1311,172 @@ class TestSetTierPrice(IsolatedHome):
         self.assertIn("pass no `--quality`", step4)
 
 
+class TestBatch(IsolatedHome):
+    """A batch goes through every guard a single run has, once."""
+
+    def write_batch(self, *rows: dict, name: str = "runs.jsonl") -> Path:
+        path = self.root / name
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        return path
+
+    def rows(self, count: int, folder: str = "set") -> list:
+        return [{"prompt": f"subject {i}", "output": str(self.root / folder / f"{i}.png")} for i in range(count)]
+
+    def test_a_dry_run_prints_one_total_for_the_whole_file(self):
+        rows = self.rows(4)
+        rows[1]["preset"] = "editorial"
+        rows[2]["platform"] = "story"
+        code, out, err, calls = self.generate("batch", str(self.write_batch(*rows)), "--dry-run")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls, [])
+        self.assertEqual(out.count("Est. total:"), 1)
+        expected = 0.0
+        for row in rows:
+            size = imager.size_for(None, imager.load_platforms()[row["platform"]] if row.get("platform") else None)
+            prompt = imager.compose_prompt(row["prompt"], row.get("preset"))
+            expected += imager.cost_per_unit(imager.DEFAULT_MODEL, "low", size or "auto", 0, prompt)[0]
+        self.assertIn(f"Est. total: ${expected:.3f} for 4 image(s)", out)
+        self.assertEqual(self.history_rows(), [])
+
+    def test_daily_cap_stops_a_batch_even_with_yes(self):
+        imager.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        imager.CONFIG_FILE.write_text("daily_cap: 0.01\n")
+        code, _, err, calls = self.generate("batch", str(self.write_batch(*self.rows(5))), "-y")
+        self.assertEqual(code, imager.EXIT_OVER_CAP)
+        self.assertIn("daily_cap", err)
+        self.assertEqual(calls, [])
+        self.assertFalse((self.root / "set" / "0.png").exists())
+
+    def test_daily_cap_also_stops_a_single_run_with_yes(self):
+        imager.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        imager.CONFIG_FILE.write_text("daily_cap: 0.001\n")
+        code, _, err, calls = self.generate("-y", "a subject", str(self.root / "a.png"))
+        self.assertEqual(code, imager.EXIT_OVER_CAP)
+        self.assertEqual(calls, [])
+
+    def test_a_rerun_skips_rows_whose_output_exists(self):
+        batch = self.write_batch(*self.rows(3))
+        code, _, err, calls = self.generate("batch", str(batch), "-y")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(calls), 3)
+        (self.root / "set" / "1.png").unlink()
+        code, out, err, calls = self.generate("batch", str(batch), "-y")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("Skipping 2 row(s)", out)
+        code, out, _, calls = self.generate("batch", str(batch), "-y")
+        self.assertEqual(calls, [])
+        self.assertIn("Nothing to do", out)
+
+    def test_every_image_gets_its_own_history_row(self):
+        code, out, err, calls = self.generate("batch", str(self.write_batch(*self.rows(6))), "-y", "--concurrency", "3")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(calls), 6)
+        rows = imager.read_history_entries()
+        self.assertEqual(len(rows), 6)
+        self.assertEqual({r["status"] for r in rows}, {"complete"})
+        self.assertIn("6 generated", out)
+
+    def test_one_set_check_applies_the_set_tier(self):
+        folder = self.root / "set"
+        folder.mkdir()
+        imager.HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        imager.HISTORY_FILE.write_text(
+            json.dumps(
+                {"model": imager.DEFAULT_MODEL, "quality": "high", "n": 1, "output_dir": str(folder), "output": ""}
+            )
+            + "\n"
+        )
+        code, out, err, _ = self.generate("batch", str(self.write_batch(*self.rows(3))), "--dry-run")
+        self.assertEqual(code, 0, err)
+        self.assertIn("quality=high", out)
+        self.assertEqual(err.count("Matching the set"), 1)
+
+    def test_one_confirmation_for_the_total_and_a_cancel_is_not_success(self):
+        batch = self.write_batch(*self.rows(12))
+        with mock.patch("builtins.input", return_value="n") as asked:
+            code, _, err, calls = self.generate("batch", str(batch), "--quality", "high")
+        self.assertEqual(asked.call_count, 1)
+        self.assertEqual(code, imager.EXIT_CANCELLED)
+        self.assertEqual(calls, [])
+
+    def run_batch_with(self, fake, *argv: str) -> tuple:
+        """Run `batch` with api_request replaced by `fake`. Returns (exit code, stdout, stderr)."""
+        out, err, code = io.StringIO(), io.StringIO(), 0
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(imager, "api_request", side_effect=fake))
+            stack.enter_context(mock.patch.object(sys, "argv", ["imager.py", "batch", *argv]))
+            stack.enter_context(mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test-key-not-real"}))
+            stack.enter_context(contextlib.redirect_stdout(out))
+            stack.enter_context(contextlib.redirect_stderr(err))
+            try:
+                imager.main()
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_row_that_fails_does_not_stop_the_others(self):
+        image = base64.b64encode(tiny_png()).decode()
+
+        def refuse_one(**kwargs):
+            if kwargs["prompt"] == "subject 1":
+                sys.exit(1)  # how api_request reports an API error
+            return [image], {}
+
+        code, out, err = self.run_batch_with(refuse_one, str(self.write_batch(*self.rows(3))), "-y")
+        self.assertEqual(code, 1)
+        self.assertIn("2 generated", out)
+        self.assertIn("1 failed", out)
+        self.assertIn("Failed:", err)
+        self.assertTrue((self.root / "set" / "0.png").exists())
+        self.assertFalse((self.root / "set" / "1.png").exists())
+        self.assertTrue((self.root / "set" / "2.png").exists())
+        self.assertEqual(sorted(r["status"] for r in imager.read_history_entries()), ["complete", "complete", "failed"])
+
+    def test_repeated_failures_stop_the_batch(self):
+        def refuse(**kwargs):
+            sys.exit(1)
+
+        rows = self.rows(imager.BATCH_FAILURE_LIMIT + 4)
+        code, out, err = self.run_batch_with(refuse, str(self.write_batch(*rows)), "-y", "--concurrency", "1")
+        self.assertEqual(code, 1)
+        self.assertIn(f"{imager.BATCH_FAILURE_LIMIT} rows failed in a row", err)
+        self.assertIn(f"{imager.BATCH_FAILURE_LIMIT} failed, 4 not started", out)
+
+    def test_concurrency_out_of_range_is_refused(self):
+        batch = str(self.write_batch(*self.rows(2)))
+        for value in ("0", str(imager.BATCH_MAX_CONCURRENCY + 1)):
+            code, _, err, calls = self.generate("batch", batch, "-y", "--concurrency", value)
+            self.assertEqual(code, 1)
+            self.assertIn("--concurrency", err)
+            self.assertEqual(calls, [])
+
+    def test_a_bad_file_is_refused_whole_before_anything_is_sent(self):
+        batch = self.write_batch(
+            {"prompt": "x", "output": str(self.root / "a.png"), "seed": 1},
+            {"prompt": "y", "output": str(self.root / "a.png")},
+            {"prompt": "z", "output": str(self.root / "b.png"), "reference": str(self.root / "missing.png")},
+            {"prompt": "w", "output": str(self.root / "c.png"), "size": "1000x1000"},
+            {"prompt": "v", "output": str(self.root / "d.png"), "preset": ["editorial"]},
+        )
+        code, _, err, calls = self.generate("batch", str(batch), "-y")
+        self.assertEqual(code, 1)
+        self.assertEqual(calls, [])
+        for expected in (
+            "unknown key seed",
+            "same output as line 1",
+            "input file not found",
+            "size 1000x1000",
+            "'preset' must be text",
+        ):
+            self.assertIn(expected, err)
+
+    def test_skill_md_documents_batch_and_drops_the_one_liner(self):
+        text = (Path(__file__).parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("$PY $GEN batch", text)
+        self.assertNotIn("python3 -c", text)
+
+
 class TestDraftSize(IsolatedHome):
     def test_draft_honours_the_config_size(self):
         imager.ensure_config_dir()

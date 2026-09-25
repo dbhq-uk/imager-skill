@@ -9,8 +9,7 @@ Generate and edit images via OpenAI's GPT Image API with an interactive, guided 
 
 ## Step 0: Is this going into a set that already exists?
 
-**Do this before anything else, every time, and do it even if you are writing your own script
-and never calling this CLI.**
+**Do this before anything else, every time.**
 
 A directory of images is a SET, and a set has a model and a quality tier somebody already chose.
 Adding to it at a different tier is wrong twice over: the new images do not match, and you pay
@@ -28,23 +27,8 @@ A set is a folder in a repository, not an absolute path. Inside git, the history
 repository and the folder's path from its top level, so the same `images/` folder in another
 worktree of the repository is the same set. Outside git, the absolute path is all there is.
 
-**A batch script that calls the API directly gets none of that protection.** If you are writing
-one, read the history yourself:
-
-```bash
-python3 -c "import json;from collections import Counter;from pathlib import Path
-h=Path.home()/'.dbhq/imager/history.jsonl';rows={}
-for i,l in enumerate(h.read_text().splitlines()):
-  try:r=json.loads(l)
-  except ValueError:continue
-  rows[r.get('id') or i]=r
-print(Counter((r.get('model'),r.get('quality')) for r in rows.values()
-  if r.get('status') in (None,'complete')
-  and (r.get('output_dir') or str(Path(r.get('output','/x')).parent))=='TARGET_DIR'))"
-```
-
-Each run writes two rows with one `id`: a pending row before the request and a final row after
-it. That is why the one-liner keys on `id` and keeps only complete rows.
+**More than a few images? Use `batch` (below). Do not write your own runner.** A script that
+calls the API itself gets no set check, no daily total and no record of what it spent.
 
 **This is not hypothetical.** On 2026-08-21 all three tiers were run side by side for a note-art
 set - the history still holds them as `q-low`, `q-medium` and `q-high` - and **low** was chosen,
@@ -253,6 +237,38 @@ replacing the file is the point. Report the path the CLI printed, not the one yo
 No JSON sidecar is written by default: `history.jsonl` already holds the record. `--sidecar`
 writes `<image>.json` beside the image, and never over an existing file.
 
+## Batch runs
+
+For more than a handful of images, write one JSON object per line and run the file:
+
+```bash
+$PY $GEN batch runs.jsonl --dry-run    # the plan for each folder, and one total
+$PY $GEN batch runs.jsonl              # one confirmation for the whole file
+```
+
+```json
+{"prompt": "a lighthouse at dusk", "output": "notes/01.png", "preset": "ink"}
+{"prompt": "a harbour crane", "output": "notes/02.png", "platform": "story"}
+```
+
+`prompt` and `output` are required. A row may also carry `preset`, `platform`, `size`, `edit`,
+`reference` (a path or a list of paths), `mask`, `background` and `output_format`. Any other key
+is refused. `--model` and `--quality` apply to the whole file. Relative paths are read from the
+directory you run it in. Each row makes one image. These are ordinary requests at the normal
+price, not OpenAI's Batch API.
+
+- The whole file is checked before anything is priced. A bad row stops the run, and every
+  problem is listed.
+- One set check per folder. The set's model and tier apply, as for a single run.
+- One total and one confirmation, at $0.50 or more. `-y` skips the confirmation, not `daily_cap`.
+- A row whose output already exists is skipped, so running the file again resumes it.
+- `--concurrency N` (default 4, at most 16) sends that many requests at once. Every image gets
+  its own history row.
+- A failed row does not stop the others. Five failures in a row stop the run.
+
+Exit codes: 0 done, 1 an error or a failed row, 3 cancelled at the confirmation, 4 over
+`daily_cap`.
+
 ## Cost Awareness
 
 Always communicate costs before generating.
@@ -292,19 +308,23 @@ run of thousands where latency does not matter, that is the difference between $
 The CLI prices it for you (`--estimate --model gpt-image-2 --n 4`) but does not submit batch
 jobs - build that separately if a run is large enough to want it.
 
-### The two guards, and the hole between them
+### The guards, and the hole between them
 
 **Per call:** the script prompts when a single invocation costs $0.50 or more.
 
 **Per day:** it warns once cumulative spend through this skill passes $5.
 
+**Per day, a hard limit:** set `daily_cap: 20` (dollars) in `~/.dbhq/imager/config.yaml`. A run
+that would take today's spend over it stops before anything is sent, and exits 4. `-y` does not
+bypass it, and neither does `batch`. There is no cap until you set one.
+
 The per-call gate alone is useless against a batch. `--n` is capped at 10, so anything larger is
 a loop of separate calls - and 2,000 images at $0.21 each is $420 while every single call is
 $0.21, comfortably under the threshold. That is the shape of every batch job.
 
-**The hole:** the daily figure only counts spend that went THROUGH this skill. A script that
-calls the OpenAI endpoint itself is invisible to it, and that is exactly what happened on
-2026-08-23. If you write your own runner, do Step 0 by hand.
+**The hole:** the daily figures only count spend that went through this skill. A script that
+calls the OpenAI endpoint itself is invisible to both. Use `batch` rather than a runner of your
+own.
 
 ## Two flags that never existed
 
@@ -393,6 +413,10 @@ $PY $GEN --dry-run --preset editorial "test" out.png
 # What did this set use?
 $PY $GEN set-check ./assets/notes/
 
+# Many images: one set check, one price, one confirmation (see "Batch runs")
+$PY $GEN batch runs.jsonl --dry-run
+$PY $GEN batch runs.jsonl --concurrency 4
+
 # Which models, presets, platforms?
 $PY $GEN list-models
 $PY $GEN list-presets
@@ -417,7 +441,7 @@ no moderation setting, and the CLI refuses `--moderation` on them.
 - `presets.yaml` - 27 style presets (visual + text-heavy + community + social)
 - `platforms.yaml` - 8 platform sizing presets
 - `references/api_reference.md` - full API documentation
-- `~/.dbhq/imager/config.yaml` - user defaults
+- `~/.dbhq/imager/config.yaml` - user defaults, and the optional `daily_cap`
 - `~/.dbhq/imager/history.jsonl` - generation log, including billed cost and token usage. A
   row is written before each request and completed after it, so a run killed mid-request
   still shows in `history` as pending and still counts, at its estimate, in the day's total

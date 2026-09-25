@@ -24,6 +24,8 @@ Generate and edit images with OpenAI's GPT Image models, through a guided flow r
 
 **It tells you the cost before it spends it, and what it cost afterwards.** Every run estimates first. Below $0.50 it proceeds; at or above, it stops and asks. `--estimate` prices a batch without generating anything, and `--dry-run` prints the fully assembled prompt without making a request at all. The estimate is built from tokens, the way the bill is: prompt text, input images and output image, each at its own rate, so an edit is priced with the images it sends. Once the call returns, the token `usage` the API reports is turned into the real billed figure and logged, and after three runs at the same model, quality, size and kind, the measured output count replaces the table. A tool that spends your money should never surprise you about how much.
 
+**A batch goes through the same guards, once.** `batch runs.jsonl` takes one JSON row per image. It checks the whole file, runs one set check per folder, prices the lot, and asks once. A rerun skips every output already on disk, so an interrupted run resumes. Set `daily_cap` in `config.yaml` and no run, batch or single, can take the day's spend past it, `-y` or not.
+
 **It knows a directory is a set.** `set-check` reads the history for the folder you are writing into and tells you which model and quality tier the images already there were made at - then matches them unless you say otherwise. Inside git a set is the repository plus the folder's path within it, so the same folder in another worktree is the same set. This exists because a batch once went out at 35x the price it needed to, purely because a default said so.
 
 **One dependency, and no vendor SDK.** PyYAML, for the catalogues. The API calls go out over `urllib` from the standard library. That is a deliberate trade: this is a skill that holds an API key, and the less third-party code sits between the key and the wire, the less there is for you to audit before you trust it.
@@ -104,6 +106,7 @@ $PY $GEN --background transparent "a line-art compass rose, isolated" logo.png
 $PY $GEN --estimate --n 10 --quality high "batch test"          # price it, generate nothing
 $PY $GEN --dry-run --preset diagram "OAuth flow" out.png        # show the prompt, call nothing
 $PY $GEN set-check ./assets/icons/                              # what did this set use?
+$PY $GEN batch runs.jsonl --dry-run                             # one plan, one total, many images
 ```
 
 ### Models
