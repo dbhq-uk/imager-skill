@@ -14,10 +14,9 @@ it touches.
 
 ### Network
 
-**OpenAI, or OpenRouter if you ask for it, and nothing else.** Requests go out
-over `urllib` from the standard library to `api.openai.com`, or to
-`openrouter.ai` under `--provider openrouter`. There is no DBHQ endpoint, no
-telemetry and no analytics.
+**OpenAI, and nothing else.** Requests go out over `urllib` from the standard
+library to `api.openai.com`. There is no DBHQ endpoint, no telemetry and no
+analytics.
 
 `--dry-run` assembles and prints the full prompt without making a request.
 `--estimate` prices a batch without making one either. Both are the honest way
@@ -29,8 +28,8 @@ the way you would treat any upload: OpenAI's data-usage terms apply, not ours.
 
 ### Credentials
 
-- The API key is read from `OPENAI_API_KEY` (or `OPENROUTER_API_KEY`) in the
-  environment **on every run**
+- The API key is read from `OPENAI_API_KEY` in the environment **on every
+  run**
 - It is **never written to disk** by this skill. `~/.dbhq/imager/`
   holds `config.yaml` (your defaults), `history.jsonl` (a generation log) and
   `last.json` (the last run, so `again` can repeat it), and none of the three

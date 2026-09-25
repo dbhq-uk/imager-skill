@@ -66,7 +66,7 @@ whole skill directory is symlinked untouched, while Codex does not, so its
 ### Requirements
 
 - **Python 3.9+**
-- **An OpenAI API key** in `OPENAI_API_KEY`. It is read from the environment and never written to disk by this skill. To route via OpenRouter instead, set `OPENROUTER_API_KEY` and pass `--provider openrouter`
+- **An OpenAI API key** in `OPENAI_API_KEY`. It is read from the environment and never written to disk by this skill
 - **ImageMagick** (optional) - needed only for platform resizing and carousel contact sheets
 
 

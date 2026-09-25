@@ -6,8 +6,8 @@
 #   2. Installs requirements.txt (PyYAML)
 #   3. Reminds the user to set OPENAI_API_KEY
 #
-# It does NOT prompt for an API key - the script reads OPENAI_API_KEY (or
-# OPENROUTER_API_KEY) from the environment. Set it in your shell rc file.
+# It does NOT prompt for an API key - the script reads OPENAI_API_KEY from the
+# environment. Set it in your shell rc file.
 
 set -e
 
@@ -65,8 +65,6 @@ chmod +x "$SKILL_DIR/scripts/imager.py"
 
 if [ -n "$OPENAI_API_KEY" ]; then
     ok "OPENAI_API_KEY is set"
-elif [ -n "$OPENROUTER_API_KEY" ]; then
-    ok "OPENROUTER_API_KEY is set (use --provider openrouter)"
 else
     warn "No API key found in environment"
     echo "    Set one in your shell rc file:"

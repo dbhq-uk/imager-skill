@@ -365,8 +365,7 @@ $PY $GEN list-presets
 $PY $GEN list-platforms
 ```
 
-Requires `OPENAI_API_KEY` in the environment. Use `--provider openrouter` with
-`OPENROUTER_API_KEY` to route via OpenRouter.
+Requires `OPENAI_API_KEY` in the environment.
 
 ## Handling a refusal
 
