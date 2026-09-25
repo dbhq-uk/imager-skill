@@ -1154,6 +1154,14 @@ class HistoryEntry:
     # How many images went in (edit image, references, mask). It separates
     # edits from generations when the estimate calibrates from history.
     inputs: int | None = None
+    # Which images went in, as absolute paths, and the two request options
+    # `again` could not otherwise rebuild. Without them, `again` after an edit
+    # paid for a text-to-image run of the edit instruction.
+    edit: str | None = None
+    reference: list | None = None
+    mask: str | None = None
+    output_compression: int | None = None
+    moderation: str | None = None
 
 
 def append_history(entry: HistoryEntry) -> None:
@@ -1540,6 +1548,24 @@ def missing_inputs(edit: str | None, reference: list | None, mask: str | None) -
     return [p for p in [edit, *(reference or []), mask] if p and not Path(p).is_file()]
 
 
+def absolute(path: str | None) -> str | None:
+    return str(Path(path).resolve()) if path else None
+
+
+def refuse_missing_inputs(edit: str | None, reference: list | None, mask: str | None) -> None:
+    """Stop before pricing when an input image is not there.
+
+    It used to surface as a FileNotFoundError traceback from build_request,
+    after the "Generating..." line and after the pending history row.
+    """
+    missing = missing_inputs(edit, reference, mask)
+    if missing:
+        for path in missing:
+            print(f"Error: input image not found: {path}", file=sys.stderr)
+        print("Nothing was sent.", file=sys.stderr)
+        sys.exit(1)
+
+
 def match_set(
     output_path: Path,
     model: str,
@@ -1678,6 +1704,11 @@ def run_request(job: Job, api_key: str) -> dict:
         **set_fields(output_path.resolve().parent),
         id=uuid.uuid4().hex,
         status="pending",
+        edit=absolute(job.edit),
+        reference=[absolute(r) for r in job.reference] if job.reference else None,
+        mask=absolute(job.mask),
+        output_compression=job.output_compression,
+        moderation=job.moderation,
     )
     append_history(pending)
 
@@ -1806,6 +1837,7 @@ def cmd_generate(args):
     config = load_config()
     provider = check_provider(args.provider or config.get("provider", "openai"))
     api_key = require_api_key(provider)
+    refuse_missing_inputs(args.edit, args.reference, args.mask)
 
     model = normalise_model(args.model or config.get("model"))
     prompt = compose_prompt(args.prompt, args.preset)
@@ -1850,17 +1882,20 @@ def cmd_generate(args):
         )
         output_format = "png"
 
-    output_path = (
-        Path(args.output) if args.output else Path(f"./gpt-image-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png")
-    )
-
-    if args.project:
+    if args.output:
+        # An explicit path always wins. --project used to replace it, so a run
+        # asked to write ./hero.png wrote somewhere under ~/imager instead.
+        # With a path, --project is only the tag `history --project` filters on.
+        output_path = Path(args.output)
+    elif args.project:
         # ~/imager/outputs since the 13 Sep 2026 rename. Nothing moves existing
         # output: these are the user's own images, not skill state, so a project
         # generated before the rename keeps its files under ~/gpt-image-2.
         base_dir = Path.home() / "imager" / "outputs" / args.project
         slug = re.sub(r"[^a-z0-9]+", "-", args.prompt.lower()[:40]).strip("-")
         output_path = base_dir / f"{datetime.now().strftime('%Y%m%d')}-{slug}.png"
+    else:
+        output_path = Path(f"./imager-{datetime.now().strftime('%Y%m%d-%H%M%S')}.png")
 
     output_path = output_for_format(output_path, output_format)
 
@@ -1927,8 +1962,10 @@ def cmd_generate(args):
         except (EOFError, KeyboardInterrupt):
             answer = ""
         if answer not in ("y", "yes"):
-            print("Cancelled.", file=sys.stderr)
-            sys.exit(0)
+            # Not 0: a script looping over calls must be able to tell a
+            # declined run from one that made an image.
+            print("Cancelled. Nothing was sent.", file=sys.stderr)
+            sys.exit(EXIT_CANCELLED)
 
     print(
         f"Generating {mode_label} with {provider}/{model} "
@@ -1975,6 +2012,26 @@ def cmd_again(args):
     if not last:
         print("No previous run found.", file=sys.stderr)
         sys.exit(1)
+    edit, reference, mask = last.get("edit"), last.get("reference"), last.get("mask")
+    recorded = [p for p in [edit, *(reference or []), mask] if p]
+    if last.get("inputs") and not recorded:
+        # A record from before input paths were kept. Replaying it without its
+        # images would pay for a different request: a text-to-image run of
+        # what was an edit instruction.
+        print(
+            f"Error: the last run sent {last['inputs']} input image(s), and its record predates "
+            f"input paths being kept, so `again` cannot rebuild it. Run it again with --edit, "
+            f"--reference or --mask.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    missing = missing_inputs(edit, reference, mask)
+    if missing:
+        print(
+            f"Error: the last run's input image(s) are gone: {', '.join(missing)}. Nothing was sent.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     print(f"Re-running: \"{last['prompt']}\"")
     args.prompt = last["prompt"]
     args.preset = last.get("preset")
@@ -1986,11 +2043,11 @@ def cmd_again(args):
     args.size = last.get("size")
     args.background = last.get("background")
     args.output_format = last.get("output_format", "png")
-    args.output_compression = None
-    args.moderation = None
-    args.edit = None
-    args.reference = None
-    args.mask = None
+    args.output_compression = last.get("output_compression")
+    args.moderation = last.get("moderation")
+    args.edit = edit
+    args.reference = reference
+    args.mask = mask
     args.project = last.get("project")
     args.dry_run = False
     args.estimate = False

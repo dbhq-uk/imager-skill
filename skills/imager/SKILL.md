@@ -413,6 +413,14 @@ $PY $GEN --overwrite "prompt" out.png
 # Dry run (show prompt without API call)
 $PY $GEN --dry-run --preset editorial "test" out.png
 
+# Tag a run, so `history --project launch` finds it. With no output path it
+# writes under ~/imager/outputs/launch/; with one, the path wins
+$PY $GEN --project launch "prompt" out.png
+$PY $GEN history --project launch
+
+# The last run again, with the same inputs. Refuses if an input image has gone
+$PY $GEN again
+
 # What did this set use?
 $PY $GEN set-check ./assets/notes/
 
@@ -426,7 +434,12 @@ $PY $GEN list-presets
 $PY $GEN list-platforms
 ```
 
-Requires `OPENAI_API_KEY` in the environment.
+Requires `OPENAI_API_KEY` in the environment. With no output path, a run writes
+`imager-<timestamp>.png` in the working directory.
+
+Exit codes: 0 done, 1 an error (including a missing input image, caught before anything is
+priced), 2 a bad or removed flag, 3 cancelled at the confirmation, 4 over `daily_cap`. A script must
+treat only 0 as an image made.
 
 ## Handling a refusal
 
@@ -449,6 +462,6 @@ no moderation setting, and the CLI refuses `--moderation` on them.
 - `~/.dbhq/imager/history.jsonl` - generation log, including billed cost and token usage. A
   row is written before each request and completed after it, so a run killed mid-request
   still shows in `history` as pending and still counts, at its estimate, in the day's total
-- `~/.dbhq/imager/last.json` - last run (for `again`)
+- `~/.dbhq/imager/last.json` - last run (for `again`), including the paths of its input images
 
 `GPT_IMAGE_HOME` relocates all three, which is how the test suite runs against an empty history.
