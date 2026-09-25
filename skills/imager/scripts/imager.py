@@ -1008,9 +1008,13 @@ def api_request(
                 ("prompt", prompt, None),
                 ("n", str(n), None),
                 ("quality", quality, None),
+                # ALWAYS A SIZE ON AN EDIT. CreateImageEditRequest defaults size
+                # to 1024x1024, not auto, so an edit sent with no size came back
+                # square whatever the photo's shape, and was billed at the wrong
+                # aspect. auto lets the model follow the input, and is what the
+                # estimate already priced (size=None is costed as auto).
+                ("size", size or "auto", None),
             ]
-            if size:
-                fields.append(("size", size, None))
             if background:
                 fields.append(("background", background, None))
             if output_format:

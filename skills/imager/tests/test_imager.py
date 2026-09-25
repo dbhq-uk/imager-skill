@@ -564,6 +564,31 @@ class TestWire(unittest.TestCase):
         self.assertTrue(request.full_url.endswith("/images/edits"))
         self.assertNotIn(b'name="moderation"', request.data)
 
+    def multipart_field(self, request, name: str) -> bytes | None:
+        marker = f'name="{name}"\r\n\r\n'.encode()
+        if marker not in request.data:
+            return None
+        return request.data.split(marker, 1)[1].split(b"\r\n", 1)[0]
+
+    def test_an_edit_with_no_size_asks_for_auto_not_the_square_default(self):
+        # The edit endpoint defaults size to 1024x1024. Sent with no size, a
+        # landscape photo came back square.
+        with tempfile.TemporaryDirectory() as tmp:
+            photo = Path(tmp) / "photo.png"
+            photo.write_bytes(tiny_png(8, 4))
+            for kwargs in ({"edit_image": str(photo)}, {"reference_images": [str(photo)]}):
+                with self.subTest(kind=next(iter(kwargs))):
+                    request = capture_request(prompt="make it blue", **kwargs)
+                    self.assertTrue(request.full_url.endswith("/images/edits"))
+                    self.assertEqual(self.multipart_field(request, "size"), b"auto")
+
+    def test_an_edit_keeps_an_explicit_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            photo = Path(tmp) / "photo.png"
+            photo.write_bytes(tiny_png())
+            request = capture_request(prompt="make it blue", edit_image=str(photo), size="1536x864")
+        self.assertEqual(self.multipart_field(request, "size"), b"1536x864")
+
     def test_a_generation_still_carries_moderation(self):
         request = capture_request(prompt="a subject", moderation="low")
         self.assertEqual(json.loads(request.data)["moderation"], "low")
