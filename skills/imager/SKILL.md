@@ -252,23 +252,33 @@ writes `<image>.json` beside the image, and never over an existing file.
 
 Always communicate costs before generating.
 
-Published gpt-image-2 per-image prices, 1024x1024:
+The CLI prices a run the way OpenAI bills it: prompt text in, input images in and image out,
+each at its own token rate. Per image at 1024x1024 on `gpt-image-2.5-flare` (sunburst spends
+the same tokens):
 
 | Quality | Per image | 10 slides | 2,000 images |
 |---------|-----------|-----------|--------------|
 | low **(default)** | $0.006 | $0.06 | **$12** |
-| medium | $0.053 | $0.53 | $106 |
-| high | $0.211 | $2.11 | **$422** |
+| high | $0.053 | $0.53 | $105 |
+| xhigh | $0.100 | $1.00 | $200 |
 
-Two things that table hides:
+`gpt-image-2` spends far more output tokens at the top: OpenAI publishes $0.006 low, $0.053
+medium and **$0.211 high** at 1024x1024.
 
-- **Non-square is cheaper.** At `high`, 1024x1536 and 1536x1024 are $0.165 against the square
-  $0.211 - about 22% less for more pixels.
-- **These are gpt-image-2's numbers.** OpenAI publishes no per-image table for the 2.5 models.
-  The CLI treats gpt-image-2's figures as an upper bound for them, then replaces the guess with
-  the real thing: every run reads `usage` back from the response and records what was actually
-  billed, and once three runs share a model/quality/size the estimate uses their median. The
-  estimate says which basis it used - `measured`, `published` or `upper bound`.
+Three things that table hides:
+
+- **Input images cost money.** Each `--edit` image, `--reference` and `--mask` adds about
+  $0.013, once for every output image. A flare draft with one reference is about $0.020, not
+  $0.006.
+- **Non-square is cheaper.** Output tokens fall with the aspect ratio: 1536x864 is about 0.63x
+  the square price and 1792x608 about 0.35x. `size=auto` is priced at 1.2x square, because the
+  API sometimes picks a size above square.
+- **The estimate names its basis.** `measured` is this machine's history: three or more runs at
+  the same model, quality, size and kind (edit or generation). `calibrated` is the token table,
+  built from real runs. `published` is OpenAI's gpt-image-2 table. `upper bound` means nothing
+  has been measured yet: 2.5 `medium` and `max`, `auto` quality, and sizes above about 2.1
+  megapixels. Those figures are deliberately high. Every run also reads `usage` back and
+  records what was actually billed.
 
 ### The Batch API
 
