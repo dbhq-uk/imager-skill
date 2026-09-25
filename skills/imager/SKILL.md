@@ -143,7 +143,12 @@ before spending anything and tells you the nearest legal size.
 2. Show the image to the user (see "Showing the result" below)
 3. Ask: "Like this direction? I can: (a) generate final quality, (b) adjust the prompt,
    (c) try a different style, (d) regenerate"
-4. If approved, generate final with `--quality high`
+4. If approved, generate the final, and choose its tier this way:
+   - **The set has a tier** (Step 0 found one): pass no `--quality`. The CLI adopts the set's
+     tier and prints the price per image. Passing `--quality` here overrides the set, which
+     is the exact failure Step 0 exists to stop.
+   - **The set is new:** agree the tier with the user before generating, then pass it. Low is
+     right unless the image is displayed large; say what each tier costs
 
 This draft-then-final flow saves roughly 97% on the iteration that finding a direction takes.
 

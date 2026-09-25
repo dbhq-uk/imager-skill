@@ -1465,7 +1465,12 @@ def cmd_generate(args):
                 file=sys.stderr,
             )
 
+    size_label = size or "auto"
+    # Every image that goes in is billed as input, once per image that comes out.
+    inputs = (1 if args.edit else 0) + len(args.reference or []) + (1 if args.mask else 0)
+
     # WHAT DID THIS SET USE LAST TIME? Adopt it unless the caller said otherwise.
+    asked_model, asked_quality = model, quality
     house = set_profile(output_path)
     if house["count"] and not is_draft:
         if not args.quality and house["quality"] and house["quality"] != quality:
@@ -1476,10 +1481,13 @@ def cmd_generate(args):
             )
             quality = house["quality"]
         elif args.quality and house["quality"] and args.quality != house["quality"]:
+            asked_per = cost_per_unit(model, args.quality, size_label, inputs, prompt)[0]
+            house_per = cost_per_unit(model, house["quality"], size_label, inputs, prompt)[0]
             print(
                 f"Warning: {output_path.parent} already holds {house['count']} image(s) made at "
-                f"quality={house['quality']}, and you asked for {args.quality}. A set that does "
-                f"not match itself is the defect this warning exists for.",
+                f"quality={house['quality']}, and you asked for {args.quality} (${asked_per:.3f}/image "
+                f"against ${house_per:.3f} at the set's tier). A set that does not match itself is "
+                f"the defect this warning exists for.",
                 file=sys.stderr,
             )
         if not args.model and house["model"] and house["model"] != model:
@@ -1496,10 +1504,19 @@ def cmd_generate(args):
                 f"Warning: that set was generated on {house['model']}, and you asked for {model}.",
                 file=sys.stderr,
             )
+        if (model, quality) != (asked_model, asked_quality):
+            # Matching the set can move the price a long way in either
+            # direction - one earlier high image in a folder makes every
+            # unflagged write there high - so the change is priced out loud.
+            before = cost_per_unit(asked_model, asked_quality, size_label, inputs, prompt)[0]
+            after = cost_per_unit(model, quality, size_label, inputs, prompt)[0]
+            change = f", {after / before:.1f}x" if before else ""
+            print(
+                f"  Price per image: ${before:.3f} at {asked_model} quality={asked_quality} -> "
+                f"${after:.3f} at the set's {model} quality={quality}{change}.",
+                file=sys.stderr,
+            )
 
-    size_label = size or "auto"
-    # Every image that goes in is billed as input, once per image that comes out.
-    inputs = (1 if args.edit else 0) + len(args.reference or []) + (1 if args.mask else 0)
     per, basis = cost_per_unit(model, quality, size_label, inputs, prompt)
     cost = per * n
     inputs_label = f", {inputs} input image{'s' if inputs != 1 else ''}" if inputs else ""

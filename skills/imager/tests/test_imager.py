@@ -1248,6 +1248,69 @@ class TestInputImagesInTheCli(IsolatedHome):
         self.assertEqual(imager.read_history_entries()[0]["inputs"], 1)
 
 
+class TestSetTierPrice(IsolatedHome):
+    """When set matching moves the tier, the price change is said out loud."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_dir = self.root / "set"
+        self.set_dir.mkdir()
+
+    def seed_set(self, quality: str, count: int = 3) -> None:
+        imager.HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with imager.HISTORY_FILE.open("a") as f:
+            for i in range(count):
+                row = {
+                    "timestamp": "2026-09-20T10:00:00",
+                    "model": imager.DEFAULT_MODEL,
+                    "quality": quality,
+                    "n": 1,
+                    "output": str(self.set_dir / f"{i}.png"),
+                    "output_dir": str(self.set_dir),
+                }
+                f.write(json.dumps(row) + "\n")
+
+    def price(self, quality: str) -> str:
+        return f"${imager.cost_per_unit(imager.DEFAULT_MODEL, quality, 'auto', 0, 'a subject')[0]:.3f}"
+
+    def test_raising_the_tier_prints_both_prices(self):
+        # One earlier high image in a folder makes every unflagged write there
+        # high. That used to happen with no mention of what it costs.
+        self.seed_set("high")
+        code, out, err, _ = self.generate("--dry-run", "a subject", str(self.set_dir / "new.png"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("Quality:   high", out)
+        self.assertIn(f"Price per image: {self.price('low')} at {imager.DEFAULT_MODEL} quality=low", err)
+        self.assertIn(f"-> {self.price('high')} at the set's {imager.DEFAULT_MODEL} quality=high", err)
+
+    def test_lowering_the_tier_prints_both_prices(self):
+        self.seed_set("low")
+        imager.CONFIG_FILE.write_text("quality: high\n")
+        code, out, err, _ = self.generate("--dry-run", "a subject", str(self.set_dir / "new.png"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("Quality:   low", out)
+        self.assertIn(f"{self.price('high')} at {imager.DEFAULT_MODEL} quality=high -> {self.price('low')}", err)
+
+    def test_an_explicit_quality_over_the_set_is_priced_in_the_warning(self):
+        self.seed_set("low")
+        code, out, err, _ = self.generate("--dry-run", "--quality", "high", "a subject", str(self.set_dir / "new.png"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("Quality:   high", out)
+        self.assertIn(f"you asked for high ({self.price('high')}/image against {self.price('low')}", err)
+
+    def test_nothing_is_said_when_the_tier_already_matches(self):
+        self.seed_set("low")
+        code, _, err, _ = self.generate("--dry-run", "a subject", str(self.set_dir / "new.png"))
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("Price per image", err)
+
+    def test_skill_md_step_4_does_not_force_a_tier_over_the_set(self):
+        text = (Path(__file__).parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        step4 = text.split("### Step 4")[1].split("### Step 5")[0]
+        self.assertNotIn("--quality high", step4)
+        self.assertIn("pass no `--quality`", step4)
+
+
 class TestDraftSize(IsolatedHome):
     def test_draft_honours_the_config_size(self):
         imager.ensure_config_dir()
