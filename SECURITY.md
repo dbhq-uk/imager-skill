@@ -46,7 +46,10 @@ protecting it.
 - Installs no packages: the CLI runs on the system `python3` with the standard library only
 - Writes generated images where you tell it to, and defaults to the working
   directory
-- Writes config, history and last-run state to `~/.dbhq/imager/`
+- Writes config, history and last-run state to `~/.dbhq/imager/`. A history
+  row holds the prompt, the settings, the cost, and the paths of the output and
+  of any input images, so that `again` can repeat an edit. It never holds the
+  images themselves
 
 ### Spend
 

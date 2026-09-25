@@ -1362,6 +1362,118 @@ class TestInputImagesInTheCli(IsolatedHome):
         self.assertEqual(imager.read_history_entries()[0]["inputs"], 1)
 
 
+@contextlib.contextmanager
+def working_directory(path: Path):
+    """contextlib.chdir arrived in 3.11; the floor is 3.9."""
+    before = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(before)
+
+
+class TestCliSafeToScript(IsolatedHome):
+    """Defects that made the CLI unsafe to drive from a script."""
+
+    def edit_run(self) -> tuple:
+        photo, ref = self.root / "photo.png", self.root / "ref.png"
+        photo.write_bytes(tiny_png())
+        ref.write_bytes(tiny_png())
+        code, _, err, _ = self.generate(
+            "--edit", str(photo), "--reference", str(ref), "make it blue", str(self.root / "a.png")
+        )
+        self.assertEqual(code, 0, err)
+        return photo, ref
+
+    def test_a_cancelled_confirmation_exits_3_and_sends_nothing(self):
+        with mock.patch("builtins.input", return_value="n") as asked:
+            code, _, err, calls = self.generate(
+                "--quality", "xhigh", "--n", "10", "a subject", str(self.root / "a.png")
+            )
+        self.assertEqual(asked.call_count, 1)
+        self.assertEqual(code, imager.EXIT_CANCELLED)
+        self.assertIn("Cancelled", err)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.history_rows(), [])
+
+    def test_again_after_an_edit_replays_the_same_inputs(self):
+        photo, ref = self.edit_run()
+        with working_directory(self.root):
+            code, _, err, calls = self.generate("again")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(calls[0]["edit_image"], str(photo.resolve()))
+        self.assertEqual(calls[0]["reference_images"], [str(ref.resolve())])
+        self.assertEqual(calls[0]["prompt"], "make it blue")
+
+    def test_again_refuses_when_an_input_is_gone(self):
+        photo, _ = self.edit_run()
+        photo.unlink()
+        with working_directory(self.root):
+            code, _, err, calls = self.generate("again")
+        self.assertEqual(code, 1)
+        self.assertIn("gone", err)
+        self.assertEqual(calls, [])
+
+    def test_again_refuses_an_old_record_of_an_edit(self):
+        # Written before input paths were kept: it says images went in, not which.
+        imager.ensure_config_dir()
+        record = {"prompt": "make it blue", "model": imager.DEFAULT_MODEL, "quality": "low", "n": 1, "inputs": 1}
+        imager.LAST_RUN_FILE.write_text(json.dumps(record))
+        with working_directory(self.root):
+            code, _, err, calls = self.generate("again")
+        self.assertEqual(code, 1)
+        self.assertIn("predates", err)
+        self.assertEqual(calls, [])
+
+    def test_project_with_an_output_path_is_only_a_tag(self):
+        home = self.root / "home"
+        with mock.patch.object(imager.Path, "home", return_value=home):
+            code, _, err, _ = self.generate("--project", "launch", "a subject", str(self.root / "hero.png"))
+        self.assertEqual(code, 0, err)
+        self.assertTrue((self.root / "hero.png").exists())
+        self.assertFalse(home.exists())
+        self.assertEqual(imager.read_history_entries()[0]["project"], "launch")
+
+    def test_project_with_no_output_path_still_files_under_the_project(self):
+        home = self.root / "home"
+        with mock.patch.object(imager.Path, "home", return_value=home):
+            code, _, err, _ = self.generate("--project", "launch", "a subject")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(list((home / "imager" / "outputs" / "launch").glob("*.png"))), 1)
+
+    def test_a_missing_input_stops_before_anything_is_priced(self):
+        photo = self.root / "photo.png"
+        photo.write_bytes(tiny_png())
+        gone = str(self.root / "gone.png")
+        for argv in (
+            ["--edit", gone],
+            ["--reference", gone],
+            ["--edit", str(photo), "--mask", gone],
+            ["--dry-run", "--edit", gone],
+        ):
+            with self.subTest(argv=argv):
+                code, out, err, calls = self.generate(*argv, "a subject", str(self.root / "a.png"))
+                self.assertEqual(code, 1)
+                self.assertIn(f"input image not found: {gone}", err)
+                self.assertNotIn("Generating", err)
+                self.assertNotIn("Est. cost", out)
+                self.assertEqual(calls, [])
+                self.assertEqual(self.history_rows(), [])
+
+    def test_the_default_output_is_named_for_the_skill(self):
+        with working_directory(self.root):
+            code, _, err, _ = self.generate("a subject")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(list(self.root.glob("imager-*.png"))), 1)
+        self.assertEqual(list(self.root.glob("gpt-image-*")), [])
+
+    def test_skill_md_documents_project(self):
+        text = (Path(__file__).parent.parent / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("--project", text)
+        self.assertIn("3 cancelled", text)
+
+
 class TestSetTierPrice(IsolatedHome):
     """When set matching moves the tier, the price change is said out loud."""
 
