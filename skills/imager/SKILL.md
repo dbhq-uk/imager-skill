@@ -33,11 +33,18 @@ one, read the history yourself:
 
 ```bash
 python3 -c "import json;from collections import Counter;from pathlib import Path
-h=Path.home()/'.dbhq/imager/history.jsonl'
-rows=[json.loads(l) for l in h.read_text().splitlines() if l.strip()]
-print(Counter((r.get('model'),r.get('quality')) for r in rows
-  if (r.get('output_dir') or str(Path(r.get('output','/x')).parent))=='TARGET_DIR'))"
+h=Path.home()/'.dbhq/imager/history.jsonl';rows={}
+for i,l in enumerate(h.read_text().splitlines()):
+  try:r=json.loads(l)
+  except ValueError:continue
+  rows[r.get('id') or i]=r
+print(Counter((r.get('model'),r.get('quality')) for r in rows.values()
+  if r.get('status') in (None,'complete')
+  and (r.get('output_dir') or str(Path(r.get('output','/x')).parent))=='TARGET_DIR'))"
 ```
+
+Each run writes two rows with one `id`: a pending row before the request and a final row after
+it. That is why the one-liner keys on `id` and keeps only complete rows.
 
 **This is not hypothetical.** On 2026-08-21 all three tiers were run side by side for a note-art
 set - the history still holds them as `q-low`, `q-medium` and `q-high` - and **low** was chosen,
@@ -396,7 +403,9 @@ no moderation setting, and the CLI refuses `--moderation` on them.
 - `platforms.yaml` - 8 platform sizing presets
 - `references/api_reference.md` - full API documentation
 - `~/.dbhq/imager/config.yaml` - user defaults
-- `~/.dbhq/imager/history.jsonl` - generation log, including billed cost and token usage
+- `~/.dbhq/imager/history.jsonl` - generation log, including billed cost and token usage. A
+  row is written before each request and completed after it, so a run killed mid-request
+  still shows in `history` as pending and still counts, at its estimate, in the day's total
 - `~/.dbhq/imager/last.json` - last run (for `again`)
 
 `GPT_IMAGE_HOME` relocates all three, which is how the test suite runs against an empty history.
