@@ -204,9 +204,11 @@ Only generate finals for approved slides. Offer to generate all at once with `-y
 5. Show result, ask if they want adjustments
 6. Generate final when approved
 
-Use `--edit <path>`. For changing one region and leaving the rest alone, add `--mask <mask.png>`:
-a PNG the same size as the source whose **transparent** areas mark what to replace. Masking is
-prompt-guided, so still say in words what should change and what must not.
+Use `--edit <path>`. The CLI sends `size=auto` on an edit unless `--size` or `--platform` sets
+one, because the edit endpoint otherwise returns a square whatever the photo's shape. To keep an
+exact aspect, pass the platform or size. For changing one region and leaving the rest alone, add
+`--mask <mask.png>`: a PNG the same size as the source whose **transparent** areas mark what to
+replace. Masking is prompt-guided, so still say in words what should change and what must not.
 
 For preserving a subject across a new scene, `--reference` (repeatable, up to 16 images) is the
 right tool rather than `--edit`.

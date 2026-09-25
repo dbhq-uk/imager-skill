@@ -89,7 +89,8 @@ consistency in the prompt and in reference images instead.
 | `image` / `image[]` | Up to 16 png/webp/jpg files, each under 50MB. |
 | `prompt` | Up to 32,000 characters. |
 | `mask` | PNG, under 4MB, same dimensions as the image. **Fully transparent areas mark what to replace.** Applied to the first image when several are sent. Prompt-guided: the model treats the shape as guidance, not a hard boundary. |
-| `background`, `output_format`, `output_compression`, `size`, `quality`, `n` | As above. |
+| `background`, `output_format`, `output_compression`, `quality`, `n` | As above. |
+| `size` | As above, except that **the default here is `1024x1024`, not `auto`**. An edit sent with no size comes back square whatever the input's shape. The CLI always sends one on an edit: `auto` unless `--size` or `--platform` sets it. |
 | `moderation` | **Not on edits.** `CreateImageEditRequest` has no such field, so the CLI refuses `--moderation` with `--edit`, `--reference` or `--mask`. |
 | `input_fidelity` | Not settable for `gpt-image-2` - it processes every image input at high fidelity automatically, which also makes input tokens higher on edits carrying references. |
 
