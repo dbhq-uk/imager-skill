@@ -25,9 +25,7 @@ cd ~/dbhq-uk/imager-skill
 
 Any path the skill names uses `${CLAUDE_SKILL_DIR}` (the skill's own directory), which Claude Code substitutes for personal, project and plugin installs alike. So `install.sh` symlinks the **whole skill directory** into `~/.claude/skills/` - `SKILL.md`, `scripts/`, the catalogues and `references/` are all live, and every edit takes effect with no re-run. Codex does not substitute `${CLAUDE_SKILL_DIR}`, so `install-codex.sh` rewrites it to the install path - **re-run `./install-codex.sh` after editing a `SKILL.md`** for Codex.
 
-Both installers build the virtualenv at `skills/imager/.venv` and install PyYAML into it. Setup is non-interactive: there is no credential to enter, because the key is read from the environment on every run.
-
-The venv is inside the skill directory rather than somewhere shared, and that is deliberate: `${CLAUDE_SKILL_DIR}/.venv/bin/python` is then the right interpreter under every install shape without a lookup.
+Neither installer installs a package. The CLI uses the standard library only, so the system `python3` runs it under every install shape, including a plugin install that runs no installer at all. Setup is non-interactive: there is no credential to enter, because the key is read from the environment on every run.
 
 ## 3. Verify without spending anything
 
@@ -35,10 +33,10 @@ The venv is inside the skill directory rather than somewhere shared, and that is
 cd ~/dbhq-uk/imager-skill/skills/imager
 export OPENAI_API_KEY=test-key-not-real
 
-.venv/bin/python scripts/imager.py list-presets
-.venv/bin/python scripts/imager.py --dry-run --preset editorial "a rocket" out.png
-.venv/bin/python scripts/imager.py --estimate --n 10 --quality high "batch"
-.venv/bin/python -m pytest tests/ -v
+python3 scripts/imager.py list-presets
+python3 scripts/imager.py --dry-run --preset editorial "a rocket" out.png
+python3 scripts/imager.py --estimate --n 10 --quality high "batch"
+python3 -m pytest tests/ -v          # needs pytest; the skill itself needs nothing
 ```
 
 `--dry-run` prints the fully assembled prompt and returns before a request is built. `--estimate` prices a batch and generates nothing. Between them you can check almost everything for free.
@@ -51,7 +49,7 @@ After changing prompt assembly or a preset, generate one real draft and look at 
 
 ```bash
 export OPENAI_API_KEY=sk-...
-.venv/bin/python scripts/imager.py --draft --preset editorial "a cat astronaut" /tmp/check.png
+python3 scripts/imager.py --draft --preset editorial "a cat astronaut" /tmp/check.png
 ```
 
 That costs about $0.006 and it is the only check that can tell you the image got worse. A preset that reads well and renders badly passes every test in this repo.
@@ -62,12 +60,12 @@ That costs about $0.006 and it is the only check that can tell you the image got
 |---|---|
 | `skills/imager/SKILL.md` | The interactive flow: what to ask, in what order, and the cost table |
 | `skills/imager/scripts/imager.py` | The CLI, and all of the logic |
-| `skills/imager/presets.yaml` | 21 presets, each a `description` and a `prompt` |
-| `skills/imager/platforms.yaml` | 8 output sizes |
+| `skills/imager/presets.json` | 27 presets, each a `description` and a `prompt` |
+| `skills/imager/platforms.json` | 8 output sizes |
 | `skills/imager/references/api_reference.md` | The API surface in full |
 
 The two fields on a preset are not interchangeable. `description` is the menu label; `prompt` is what gets sent, and editing it changes every image that preset will ever produce. Treat that as a breaking change.
 
 ## Working across machines
 
-Editing anything under `~/dbhq-uk/imager-skill` is live immediately in Claude Code - the skill directory is symlinked whole. For Codex, re-run `./install-codex.sh` after a `SKILL.md` edit. If you develop on more than one machine, `git pull` before you start and `git push` when done. The venv is local to each machine and is not in the repository, and neither is your API key.
+Editing anything under `~/dbhq-uk/imager-skill` is live immediately in Claude Code - the skill directory is symlinked whole. For Codex, re-run `./install-codex.sh` after a `SKILL.md` edit. If you develop on more than one machine, `git pull` before you start and `git push` when done. Your API key is never in the repository.

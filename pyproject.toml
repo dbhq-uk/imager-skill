@@ -1,6 +1,5 @@
-# Tooling config only. This is not a package: the skill is a directory with its
-# own requirements.txt and its own .venv, and nothing here is ever built or
-# published.
+# Tooling config only. This is not a package: the skill is a directory that runs
+# on the standard library, and nothing here is ever built or published.
 
 [tool.ruff]
 # 3.9 is the skill's floor. Setting it here matters: without it ruff would

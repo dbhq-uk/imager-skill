@@ -28,7 +28,7 @@ Generate and edit images with OpenAI's GPT Image models, through a guided flow r
 
 **It knows a directory is a set.** `set-check` reads the history for the folder you are writing into and tells you which model and quality tier the images already there were made at - then matches them unless you say otherwise. Inside git a set is the repository plus the folder's path within it, so the same folder in another worktree is the same set. This exists because a batch once went out at 35x the price it needed to, purely because a default said so.
 
-**One dependency, and no vendor SDK.** PyYAML, for the catalogues. The API calls go out over `urllib` from the standard library. That is a deliberate trade: this is a skill that holds an API key, and the less third-party code sits between the key and the wire, the less there is for you to audit before you trust it.
+**No dependencies, and no vendor SDK.** The standard library only, so it runs on the system `python3` straight from a plugin install, with no setup step. The API calls go out over `urllib`. That is a deliberate trade: this is a skill that holds an API key, and the less third-party code sits between the key and the wire, the less there is for you to audit before you trust it.
 
 **Presets that carry the whole prompt, not a style word.** 27 of them, each pairing a short description you choose from with a full prompt fragment that does the work - `editorial`, `blueprint`, `ink`, `risograph`, `wireframe`, `constellation`, `brutalist`, `grain`, `nordic`, `bauhaus` for visual work; `infographic`, `slide`, `diagram`, `poster`, `menu`, `manga` where the text in the image has to be legible; plus community favourites and a social set. Platform sizing for the eight places images actually go - and the image is generated at the platform's own aspect ratio, then scaled down, rather than generated square and cropped.
 
@@ -75,8 +75,8 @@ whole skill directory is symlinked untouched, while Codex does not, so its
 ## Requirements
 
 **Python 3.9 or newer**, and an `OPENAI_API_KEY` - this skill calls a paid
-API and does nothing useful without one. `install.sh` builds a virtualenv
-inside the skill directory.
+API and does nothing useful without one. Nothing else to install: the CLI uses
+the standard library only.
 
 **ImageMagick is optional** and needed only for platform resizing and
 carousel contact sheets. Everything else works without it.
@@ -96,7 +96,7 @@ Describe what you want and the skill takes it from there.
 Or drive the CLI directly:
 
 ```bash
-PY=~/.claude/skills/imager/.venv/bin/python
+PY=python3
 GEN=~/.claude/skills/imager/scripts/imager.py
 
 $PY $GEN --draft --preset editorial "a cat astronaut" out.png   # ~$0.006

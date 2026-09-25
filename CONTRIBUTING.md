@@ -22,7 +22,7 @@ You need an OpenAI API key to generate anything, but not to run the tests: nothi
 ## Before opening a PR
 
 - `ruff check . && ruff format --check .`
-- `cd skills/imager && OPENAI_API_KEY=test-key-not-real .venv/bin/python -m pytest tests/ -v` - all green
+- `cd skills/imager && OPENAI_API_KEY=test-key-not-real python3 -m pytest tests/ -v` - all green (pytest is the only thing to install, and only for the tests)
 - `shellcheck ./install.sh ./install-codex.sh ./skills/*/scripts/*.sh`
 - `claude plugin validate .`
 - If you touched prompt assembly or a preset, generate one real draft and look at it. It costs about $0.006, and no test can tell you the image got worse
@@ -40,7 +40,7 @@ A preset is not a style word. It is a full prompt fragment that has to work on a
 
 ## What we will not accept
 
-**A second runtime dependency, or a vendor SDK.** PyYAML and the standard library. This skill holds an API key, and the argument that it is safe to hand one over rests on the code between the key and the wire being short enough to read. `openai` and `requests` both buy convenience this does not need.
+**A runtime dependency, or a vendor SDK.** The standard library only. `/plugin install` copies the directory and runs nothing, so a dependency is a skill that does not start. This skill holds an API key, and the argument that it is safe to hand one over rests on the code between the key and the wire being short enough to read. `openai` and `requests` both buy convenience this does not need.
 
 **Anywhere the key gets written down.** Not into config, not into the history log, not into a last-run record so `again` can replay it, not into a debug line. It is read from the environment on every run and that is the whole of it.
 
