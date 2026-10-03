@@ -23,8 +23,8 @@ Content-Type: multipart/form-data   (edits)
 | `gpt-image-2.5-flare` | Fast everyday generation. Adds `xhigh` and `max` quality. |
 | `gpt-image-2.5-sunburst` | Precision editing, fine detail, dense text. Slower. Adds `xhigh` and `max`. |
 | `gpt-image-2` | Previous generation. Quality up to `high`. Eligible for the Batch API discount. |
-| `gpt-image-1.5`, `gpt-image-1-mini`, `chatgpt-image-latest` | **Removed from the API on 1 December 2026.** Replacement is `gpt-image-2`. |
-| `gpt-image-1` | Removed 23 October 2026. |
+| `gpt-image-1.5`, `gpt-image-1-mini`, `chatgpt-image-latest` | **OpenAI shuts them down on 1 December 2026.** Replacement is `gpt-image-2`. The CLI refuses them. |
+| `gpt-image-1` | OpenAI shuts it down on 23 October 2026. The CLI refuses it. |
 | `dall-e-2`, `dall-e-3` | Deprecated 12 May 2026. |
 
 Dated snapshots exist: `gpt-image-2-2026-04-21`, `gpt-image-2.5-sunburst-2026-09-08`,
