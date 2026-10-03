@@ -60,7 +60,7 @@ Quality: `low`, `medium`, `high`, plus `xhigh` and `max` on the 2.5 models. The 
 
 ## Interactive flow
 
-Ask the user one question at a time, and wait for each answer. Do not skip steps.
+Ask the user one question at a time, and wait for each answer. Skip a question the request already answers.
 
 ### Step 1: What are we making?
 
